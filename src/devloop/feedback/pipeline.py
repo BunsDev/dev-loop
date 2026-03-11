@@ -275,7 +275,23 @@ def run_tb1(issue_id: str, repo_path: str) -> dict:
                     issue_title=issue_title,
                     issue_description=issue_description,
                 )
-                gate_suite = GateSuiteResult(**gate_raw)
+                try:
+                    gate_suite = GateSuiteResult(**gate_raw)
+                except Exception as exc:
+                    elapsed = time.monotonic() - pipeline_start
+                    error_msg = f"Malformed gate result: {exc}"
+                    gates_span.set_status(trace.StatusCode.ERROR, error_msg)
+                    root_span.set_status(trace.StatusCode.ERROR, error_msg)
+                    return TB1Result(
+                        issue_id=issue_id,
+                        repo_path=repo_path,
+                        success=False,
+                        phase="gates",
+                        worktree_path=worktree_path,
+                        persona=persona_name,
+                        error=error_msg,
+                        duration_seconds=round(elapsed, 2),
+                    ).model_dump()
 
                 gates_span.set_attribute("tb1.gates_passed", gate_suite.overall_passed)
                 if gate_suite.first_failure:

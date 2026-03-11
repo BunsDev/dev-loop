@@ -38,7 +38,17 @@ tracer = trace.get_tracer("gates", "0.1.0")
 # ---------------------------------------------------------------------------
 
 _CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "review-gate.yaml"
-_GITLEAKS_BIN = Path.home() / ".local" / "bin" / "gitleaks"
+_GITLEAKS_FALLBACK = Path.home() / ".local" / "bin" / "gitleaks"
+
+
+def _find_gitleaks() -> str | None:
+    """Find gitleaks binary: PATH first, then ~/.local/bin fallback."""
+    found = shutil.which("gitleaks")
+    if found:
+        return found
+    if _GITLEAKS_FALLBACK.exists():
+        return str(_GITLEAKS_FALLBACK)
+    return None
 
 
 def _load_review_config() -> dict:
@@ -73,13 +83,17 @@ def _run_cmd(
     cwd: str | Path | None = None,
     timeout: int = 120,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a subprocess command with timeout."""
+    """Run a subprocess command with timeout in a clean env."""
+    env = os.environ.copy()
+    # Remove dev-loop's own venv so uv/pytest in the worktree use their own
+    env.pop("VIRTUAL_ENV", None)
     return subprocess.run(
         args,
         capture_output=True,
         text=True,
         cwd=cwd,
         timeout=timeout,
+        env=env,
     )
 
 
@@ -336,10 +350,24 @@ def run_gate_2_secrets(worktree_path: str) -> dict:
             ).model_dump()
 
         # --- Resolve gitleaks binary ---
-        gitleaks_bin = str(_GITLEAKS_BIN)
-        if not _GITLEAKS_BIN.exists():
-            # Fall back to PATH
-            gitleaks_bin = "gitleaks"
+        gitleaks_bin = _find_gitleaks()
+        if gitleaks_bin is None:
+            elapsed = time.monotonic() - start
+            return GateResult(
+                gate_name="gate_2_secrets",
+                passed=False,
+                findings=[
+                    Finding(
+                        severity="critical",
+                        message=(
+                            "gitleaks not found. Install it: "
+                            "https://github.com/gitleaks/gitleaks#installing"
+                        ),
+                    )
+                ],
+                duration_seconds=round(elapsed, 3),
+                error="gitleaks binary not found on PATH or at ~/.local/bin/gitleaks",
+            ).model_dump()
 
         # --- Run gitleaks ---
         report_path = worktree / ".gitleaks-report.json"
@@ -536,11 +564,34 @@ def run_gate_4_review(
             review_env = os.environ.copy()
             review_env.pop("CLAUDECODE", None)
 
+            review_schema = json.dumps({
+                "type": "object",
+                "properties": {
+                    "findings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "severity": {"type": "string"},
+                                "message": {"type": "string"},
+                                "file": {"type": "string"},
+                                "line": {"type": "integer"},
+                                "rule": {"type": "string"},
+                            },
+                            "required": ["severity", "message"],
+                        },
+                    },
+                    "summary": {"type": "string"},
+                },
+                "required": ["findings"],
+            })
+
             review_result = subprocess.run(
                 [
                     claude_path,
                     "--print",
                     "--model", model,
+                    "--json-schema", review_schema,
                 ],
                 input=prompt,
                 capture_output=True,

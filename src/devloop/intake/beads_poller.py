@@ -62,12 +62,17 @@ def claim_issue(issue_id: str) -> bool:
     Returns True if this call claimed the issue (status transitioned),
     False if it was already claimed or the command failed.
     """
-    result = subprocess.run(
-        ["br", "update", issue_id, "--claim"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["br", "update", issue_id, "--claim"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("Timed out claiming issue %s", issue_id)
+        return False
     if result.returncode != 0:
         logger.warning(
             "Failed to claim issue %s: %s",
@@ -92,13 +97,19 @@ def claim_issue(issue_id: str) -> bool:
 
 def poll_ready() -> list[WorkItem]:
     """Poll beads for ready issues. Returns WorkItems sorted by priority."""
-    result = subprocess.run(
-        ["br", "ready", "--json"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["br", "ready", "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("Timed out polling br ready")
+        return []
     if result.returncode != 0:
+        logger.warning("br ready failed (exit %d): %s", result.returncode, result.stderr.strip())
         return []
 
     issues = json.loads(result.stdout)

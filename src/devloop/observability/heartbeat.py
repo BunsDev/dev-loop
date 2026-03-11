@@ -13,11 +13,14 @@ provides:
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import time
-from pathlib import Path
 
 from opentelemetry import trace
+
+from devloop.paths import WORKTREE_BASE
 
 # ---------------------------------------------------------------------------
 # OTel tracer for heartbeat operations
@@ -29,7 +32,6 @@ tracer = trace.get_tracer("observability.heartbeat", "0.1.0")
 # Constants
 # ---------------------------------------------------------------------------
 
-WORKTREE_BASE = Path("/tmp/dev-loop/worktrees")
 METADATA_FILENAME = ".dev-loop-metadata.json"
 
 # ---------------------------------------------------------------------------
@@ -194,10 +196,16 @@ def _touch_metadata(issue_id: str) -> None:
         if raw.get("issue_id") == issue_id:
             raw["last_heartbeat"] = time.time()
             try:
-                meta_path.write_text(
-                    json.dumps(raw, indent=2),
-                    encoding="utf-8",
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    dir=str(meta_path.parent), suffix=".tmp"
                 )
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(raw, f, indent=2)
+                os.replace(tmp_path, str(meta_path))
             except OSError:
-                pass
+                # Clean up temp file on failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
             return

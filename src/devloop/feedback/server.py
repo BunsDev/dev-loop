@@ -54,6 +54,7 @@ def _run_br(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
 
 
@@ -271,7 +272,20 @@ def retry_agent(
             issue_title=issue_title,
             issue_description=issue_description,
         )
-        gate_suite = GateSuiteResult(**gate_raw)
+        try:
+            gate_suite = GateSuiteResult(**gate_raw)
+        except Exception as exc:
+            error_msg = f"Malformed gate result on retry {attempt}: {exc}"
+            span.set_status(trace.StatusCode.ERROR, error_msg)
+            return RetryResult(
+                attempt=attempt,
+                max_retries=max_retries,
+                success=False,
+                gate_results=None,
+                escalated=False,
+                agent_exit_code=exit_code,
+                error=error_msg,
+            ).model_dump()
 
         span.set_attribute("retry.gates_passed", gate_suite.overall_passed)
         if gate_suite.first_failure:

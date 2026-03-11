@@ -154,33 +154,6 @@ def _run_agent(config: AgentConfig) -> AgentResult:
         )
 
 
-def _find_session_output(worktree_path: str) -> str | None:
-    """Look for the latest agent output in a worktree's .claude/ directory.
-
-    Claude Code writes session data under .claude/ in the working directory.
-    This function attempts to find and return the most recent session output.
-    """
-    claude_dir = Path(worktree_path) / ".claude"
-    if not claude_dir.is_dir():
-        return None
-
-    # Look for session files — Claude Code stores them as JSON
-    session_files = sorted(
-        claude_dir.glob("**/*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-
-    if not session_files:
-        return None
-
-    # Return the content of the most recent session file
-    latest = session_files[0]
-    try:
-        return latest.read_text(encoding="utf-8")
-    except OSError:
-        return None
-
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -347,7 +320,20 @@ def get_agent_output(worktree_path: str) -> dict:
                 "message": error_msg,
             }
 
-        output = _find_session_output(worktree_path)
+        # Look for .claude/ session files in the worktree
+        claude_dir = wt / ".claude"
+        output = None
+        if claude_dir.is_dir():
+            session_files = sorted(
+                claude_dir.glob("**/*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if session_files:
+                try:
+                    output = session_files[0].read_text(encoding="utf-8")
+                except OSError:
+                    pass
 
         if output is None:
             span.set_attribute("runtime.output_found", False)

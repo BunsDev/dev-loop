@@ -79,6 +79,7 @@ def _run_br(*args: str, check: bool = False) -> subprocess.CompletedProcess[str]
         capture_output=True,
         text=True,
         check=check,
+        timeout=30,
     )
 
 

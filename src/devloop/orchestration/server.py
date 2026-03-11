@@ -25,6 +25,7 @@ from devloop.orchestration.types import (
     PersonaConfig,
     WorktreeInfo,
 )
+from devloop.paths import WORKTREE_BASE
 
 # ---------------------------------------------------------------------------
 # OTel tracer for orchestration layer
@@ -36,7 +37,6 @@ tracer = trace.get_tracer("orchestration", "0.1.0")
 # Constants
 # ---------------------------------------------------------------------------
 
-WORKTREE_BASE = Path("/tmp/dev-loop/worktrees")
 BRANCH_PREFIX = "dl/"
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 AGENTS_CONFIG = CONFIG_DIR / "agents.yaml"
