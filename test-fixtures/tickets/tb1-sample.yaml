@@ -1,0 +1,13 @@
+# Mock ticket for TB-1 testing without Linear
+# Usage: just tb1-mock test-fixtures/tickets/tb1-sample.yaml
+
+id: MOCK-001
+title: "Fix typo in README.md installation section"
+repo: prompt-bench
+labels: [bug]
+cost_ceiling: 1.00
+priority: medium
+description: |
+  The README.md has a typo in the installation section.
+  "npm instal" should be "npm install" on line 23.
+status: Ready

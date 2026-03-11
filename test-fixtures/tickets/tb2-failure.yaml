@@ -1,0 +1,17 @@
+# Mock ticket for TB-2 testing — intentionally references nonexistent file
+# Usage: just tb2 --mock-intake test-fixtures/tickets/tb2-failure.yaml
+
+id: MOCK-002
+title: "Fix auth bug in src/auth/oauth-handler.ts"
+repo: prompt-bench
+labels: [bug]
+cost_ceiling: 1.00
+priority: high
+description: |
+  The OAuth handler at src/auth/oauth-handler.ts has a race condition
+  in the token refresh logic. When two requests arrive simultaneously,
+  both try to refresh the token, causing a 401 cascade.
+
+  NOTE: This file does not exist in prompt-bench. The agent should fail,
+  and the feedback loop should handle the retry.
+status: Ready
