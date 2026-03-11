@@ -15,11 +15,12 @@ Run standalone:  uv run python -m devloop.gates.server
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
-import anthropic
 import yaml
 from fastmcp import FastMCP
 from opentelemetry import trace
@@ -235,6 +236,8 @@ def run_gate_0_sanity(worktree_path: str) -> dict:
                 passed = False
 
         elif project_type == "python":
+            # Ensure deps are installed in the worktree before testing
+            _run_cmd(["uv", "sync"], cwd=worktree, timeout=120)
             test_result = _run_cmd(
                 ["uv", "run", "pytest", "--tb=short", "-q"], cwd=worktree, timeout=300
             )
@@ -521,32 +524,43 @@ def run_gate_4_review(
 
         prompt = _build_review_prompt(diff_text, issue_title, issue_description, config)
 
-        # --- Call Claude API ---
+        # --- Call Claude via CLI (uses existing Claude Code auth) ---
         try:
-            client = anthropic.Anthropic()  # uses ANTHROPIC_API_KEY from env
-            response = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}],
+            claude_path = shutil.which("claude")
+            if claude_path is None:
+                raise FileNotFoundError(
+                    "claude CLI not found on PATH. "
+                    "Install it: https://docs.anthropic.com/en/docs/claude-code"
+                )
+
+            review_env = os.environ.copy()
+            review_env.pop("CLAUDECODE", None)
+
+            review_result = subprocess.run(
+                [
+                    claude_path,
+                    "--print",
+                    "--model", model,
+                ],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=review_env,
             )
 
-            # Extract text from response
-            response_text = ""
-            for block in response.content:
-                if hasattr(block, "text"):
-                    response_text += block.text
-
+            response_text = review_result.stdout.strip()
             span.set_attribute("gate.review_model", model)
-            span.set_attribute(
-                "gate.review_tokens_input", response.usage.input_tokens
-            )
-            span.set_attribute(
-                "gate.review_tokens_output", response.usage.output_tokens
-            )
 
-        except anthropic.APIError as exc:
+            if review_result.returncode != 0:
+                raise RuntimeError(
+                    f"claude --print exited with code {review_result.returncode}: "
+                    f"{review_result.stderr[:500]}"
+                )
+
+        except (FileNotFoundError, RuntimeError, subprocess.TimeoutExpired) as exc:
             elapsed = time.monotonic() - start
-            error_msg = f"Claude API error: {exc}"
+            error_msg = f"Claude review error: {exc}"
             span.set_status(trace.StatusCode.ERROR, error_msg)
             return GateResult(
                 gate_name="gate_4_review",

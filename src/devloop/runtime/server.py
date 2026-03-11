@@ -83,16 +83,12 @@ def _build_command(
     cmd = [
         claude_path,
         "--print",
-        "--cwd",
-        config.worktree_path,
         "--model",
         config.model,
     ]
 
     tools = config.allowed_tools if config.allowed_tools else DEFAULT_ALLOWED_TOOLS
     cmd.extend(["--allowedTools", ",".join(tools)])
-
-    cmd.extend(["--message", config.task_prompt])
 
     return cmd
 
@@ -105,19 +101,18 @@ def _run_agent(config: AgentConfig) -> AgentResult:
     claude_path = _find_claude_cli()
     cmd = _build_command(claude_path, config)
 
-    # Ensure ANTHROPIC_API_KEY is in the environment
+    # claude CLI authenticates via its own auth (Max subscription, OAuth, or API key)
+    # so we don't require ANTHROPIC_API_KEY here.
+    # Unset CLAUDECODE to allow --print mode from within a Claude Code session.
     env = os.environ.copy()
-    if "ANTHROPIC_API_KEY" not in env:
-        raise OSError(
-            "ANTHROPIC_API_KEY not set in environment. "
-            "The claude CLI needs this to authenticate with the Anthropic API."
-        )
+    env.pop("CLAUDECODE", None)
 
     start = time.monotonic()
 
     try:
         result = subprocess.run(
             cmd,
+            input=config.task_prompt,
             capture_output=True,
             text=True,
             timeout=config.timeout_seconds,
