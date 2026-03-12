@@ -805,6 +805,7 @@ def run_gate_4_review(
                     claude_path,
                     "--print",
                     "--model", model,
+                    "--output-format", "json",
                     "--json-schema", review_schema,
                 ],
                 input=prompt,
@@ -836,29 +837,39 @@ def run_gate_4_review(
             ).model_dump()
 
         # --- Parse response JSON ---
+        # --output-format json returns NDJSON (or a JSON array).
+        # Extract structured_output from the {"type":"result"} object.
         parsed = None
         try:
-            # Try to extract JSON from the response (handle markdown fences)
-            text = response_text.strip()
-            if text.startswith("```"):
-                # Strip markdown code fences
-                lines = text.split("\n")
-                # Remove first line (```json or ```) and last line (```)
-                json_lines = []
-                in_fence = False
-                for line in lines:
-                    if line.strip().startswith("```") and not in_fence:
-                        in_fence = True
-                        continue
-                    if line.strip() == "```" and in_fence:
-                        break
-                    if in_fence:
-                        json_lines.append(line)
-                text = "\n".join(json_lines)
+            # Try as JSON array first
+            if response_text.startswith("["):
+                objects = json.loads(response_text)
+            else:
+                # NDJSON: one JSON object per line
+                objects = [
+                    json.loads(line)
+                    for line in response_text.split("\n")
+                    if line.strip()
+                ]
 
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            # Try to find JSON object in the response
+            # Find the result object with structured_output
+            for obj in objects:
+                if obj.get("type") == "result" and "structured_output" in obj:
+                    parsed = obj["structured_output"]
+                    break
+
+            # Fallback: try the "result" text field
+            if parsed is None:
+                for obj in objects:
+                    if obj.get("type") == "result" and obj.get("result"):
+                        try:
+                            parsed = json.loads(obj["result"])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        break
+
+        except (json.JSONDecodeError, TypeError):
+            # Last resort: try to find a raw JSON object in the text
             brace_start = response_text.find("{")
             brace_end = response_text.rfind("}")
             if brace_start != -1 and brace_end != -1:
@@ -870,13 +881,14 @@ def run_gate_4_review(
         if parsed is None:
             findings.append(
                 Finding(
-                    severity="warning",
+                    severity="critical",
                     message=(
                         "Could not parse review response as JSON. "
                         f"Raw response: {response_text[:500]}"
                     ),
                 )
             )
+            passed = False
         else:
             # Extract findings from parsed response
             review_findings = parsed.get("findings", [])
