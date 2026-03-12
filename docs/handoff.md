@@ -1,131 +1,133 @@
-# dev-loop Handoff — 2026-03-11
+# dev-loop Handoff — 2026-03-12
 
-## What This Is
-A tracer-bullet-driven developer tooling harness. 100% open-source stack. TB-1 is code-complete — 6 MCP servers + pipeline orchestrator, ready for first end-to-end run.
+## Status: TB-1 PASSING
 
-## What Was Built (This Session)
+TB-1 is fully operational. Two successful end-to-end runs completed:
+- **Bug fix** (modulo zero-guard): 94s, all gates passed first try
+- **Feature add** (factorial function): 245s, failed Gate 0 on first try, succeeded on retry
 
-### 25 Python Files — 6 MCP Servers + Pipeline
-All under `src/devloop/`:
+## What Was Done This Session
 
-| Layer | Server Name | Key Files | Tools |
-|-------|------------|-----------|-------|
-| 1. Intake | `beads-intake` | `intake/server.py`, `types.py`, `beads_poller.py` | `poll_ready_issues`, `get_issue_detail`, `update_issue_status`, `add_issue_comment` |
-| 2. Orchestration | `orchestration` | `orchestration/server.py`, `types.py` | `setup_worktree`, `select_persona`, `build_claude_md_overlay`, `cleanup_worktree` |
-| 3. Runtime | `agent-runtime` | `runtime/server.py`, `types.py`, `deny_list.py` | `spawn_agent`, `kill_agent`, `get_agent_output` |
-| 4. Quality Gates | `quality-gates` | `gates/server.py`, `types.py` | `run_gate_0_sanity`, `run_gate_2_secrets`, `run_gate_4_review`, `run_all_gates` |
-| 5. Observability | `observability` | `observability/server.py`, `tracing.py`, `heartbeat.py`, `types.py` | `health_check`, `get_trace_url`, `query_recent_traces`, `init_tracing`, `start_heartbeat` |
-| 6. Feedback | `feedback-loop` | `feedback/server.py`, `types.py`, **`pipeline.py`** | `build_retry_prompt`, `retry_agent`, `escalate_to_human`, **`run_tb1`** |
+### 1. Created beads issues from handoff, executed all 17
+Previous session left 6 TODO items. Created beads for each, added dependencies, executed in order. Then audited the codebase with fresh eyes, found 8 more issues, created and executed those too. Plus 2 test issues for real TB-1 runs.
 
-### Tools Installed
-- **dmux v5.4.0** — `npm install -g dmux` (TUI worktree multiplexer, scored 0.80)
-- **gitleaks v8.30.0** — `~/.local/bin/gitleaks` (secret scanner, scored 0.86)
-- **DeepEval v3.8.9** — in pyproject.toml via `uv add` (LLM-as-judge, scored 0.73)
-- **OpenObserve** — Docker container `dev-loop-openobserve` on :5080 (scored 0.83)
-- **beads (br)** — already installed (scored 0.92)
+### 2. Wired justfile + populated prompt-bench
+- `just tb1 <issue_id> <repo_path>` now calls `run_tb1()` with JSON output
+- `~/prompt-bench` has a real Python project: calculator module (add, subtract, multiply, divide, power, modulo) with 5 pytest tests, pyproject.toml with `[dependency-groups] dev`
 
-### Config Files Created
+### 3. Lint pass (13 errors → 0)
+Fixed f-string placeholders, ambiguous variable names, line lengths, unused variables, import ordering, aliased errors.
+
+### 4. Git committed (6 commits on main)
 ```
-config/
-├── agents.yaml              # 5 personas: bug-fix, feature, refactor, security-fix, docs
-├── capabilities.yaml        # Per-project tool/path scoping
-├── dependencies.yaml        # Cross-repo cascade map (TB-5)
-├── review-gate.yaml         # DeepEval review criteria + severity levels
-├── scheduling.yaml          # Priority queuing + budget throttle
-└── projects/
-    └── prompt-bench.yaml    # Per-project gate thresholds
+61f708a Re-score tools with real TB-1 data from 4 pipeline runs
+a75cbe9 Fix Gate 0: detect committed changes and install worktree deps correctly
+d1663fc Add 85 unit tests across 7 test files
+f243c62 Harden TB-1 pipeline: timeouts, error handling, portability
+1e368a5 Fix CLI integration: use stdin for prompts, unset CLAUDECODE for nesting
+898caad TB-1 code-complete: 6 MCP servers, pipeline orchestrator, full OSS stack
 ```
 
-### Edge Cases Implemented
-- **Optimistic locking** — `claim_issue()` in beads_poller.py prevents duplicate pickup
-- **Emergency stop** — `just emergency-stop` kills agents, marks issues interrupted
-- **Secrets deny list** — `deny_list.py` with 15 patterns + `is_path_denied()`
-- **Crash recovery** — `heartbeat.py` with background heartbeat thread + `find_stale_runs()`
+### 5. CLI integration fixes (discovered during first e2e runs)
+- **CLAUDECODE env var** blocks nested `claude --print` — now unset before spawn
+- **`--cwd` and `--message` not valid flags** — switched to stdin pipe for prompts
+- **anthropic SDK replaced** with `claude --print` for Gate 4 review — no API key needed
+- **`--json-schema`** added for structured Gate 4 review output
 
-### Documentation Fully Updated
-All docs rewritten for 100% OSS stack:
-- 6 layer docs, README, architecture, tracer-bullets, scoring-rubric, network-requirements
-- edge-cases (25 items), edge-cases-pass2 (16 items) — all updated
-- test-repos, handoff, .env.example, test fixtures
-- ADR-005 marked superseded, ADR-007 + ADR-008 added
-- All beads issues cleaned of stale tool references (Linear→beads, CodeRabbit→DeepEval, Aikido→VibeForge)
+### 6. Hardening (8 issues)
+- timeout=30 on all `br` subprocess calls (3 files)
+- GateSuiteResult guard with try/except in retry and pipeline
+- WORKTREE_BASE extracted to shared `paths.py`, configurable via `DEVLOOP_WORKTREE_DIR`
+- gitleaks resolution: `shutil.which()` first, `~/.local/bin` fallback, clear error if missing
+- Atomic heartbeat metadata writes (tempfile + os.replace)
+- Dead code removed (`_find_session_output`)
+- VIRTUAL_ENV cleaned from gate subprocess env
 
-### Beads Issues
-- 48 total created, all 48 now closed
-- Issue prefix: `dl`
+### 7. Gate 0 fixes (discovered during real runs)
+- Detect committed changes via merge-base diff (not just unstaged/staged)
+- `uv sync --dev` installs `[dependency-groups] dev` (pytest) in worktree
+- Clean VIRTUAL_ENV from subprocess env to avoid venv conflicts
 
-## What Must Happen Next (In Order)
+### 8. Unit tests (85 tests, 7 files)
+- test_beads_poller.py (17) — poll, claim, WorkItem properties
+- test_deny_list.py (30) — is_path_denied parametrized across all patterns
+- test_orchestration.py (13) — persona matching, config loading
+- test_gates.py (8) — gitleaks discovery, project type detection
+- test_heartbeat.py (5) — stale runs, start/stop heartbeat
+- test_paths.py (3) — default path, env var override
 
-### 1. Wire justfile tb1 command
-The `just tb1` recipe still prints TODO. Change it to:
+### 9. Re-scored tools with real data
+Key finding: **Claude Code CLI replaces both DeepEval and dmux** for TB-1.
+- dmux downgraded 0.80→0.65 (TUI-only, can't automate)
+- gitleaks upgraded 0.86→0.88 (fast, zero false positives)
+- Claude Code CLI scored 0.90 (new entry — agent spawn + LLM review)
+
+## Architecture (Current)
+
 ```
-just tb1:
-    uv run python -c "from devloop.feedback.pipeline import run_tb1; run_tb1('ISSUE_ID', '/home/musicofhel/prompt-bench')"
+just tb1 <issue_id> <repo_path>
+    → run_tb1() in feedback/pipeline.py
+        → Phase 1: poll_ready() — br ready --json
+        → Phase 2: claim_issue() — br update --claim
+        → Phase 3: setup_worktree() — git worktree add
+        → Phase 4: select_persona() + build_claude_md_overlay()
+        → Phase 5: init_tracing() — OTel → OpenObserve
+        → Phase 6: start_heartbeat() — background thread
+        → Phase 7: spawn_agent() — claude --print via stdin
+        → Phase 8: run_all_gates() — Gate 0 → Gate 2 → Gate 4
+        → Phase 9: gates pass → success
+        → Phase 10: gates fail → retry with error context
+        → Phase 11: retries exhausted → escalate_to_human()
+        → Phase 12: cleanup — stop heartbeat, remove worktree
 ```
 
-### 2. Populate prompt-bench
-`~/prompt-bench` is a placeholder (1 commit, just README.md). Needs real code so gates have something to test:
-- Add a simple Python or Node project with at least 1 test
-- Seed a beads issue targeting it
-
-### 3. Lint pass
-Run `uv run ruff check src/` and fix any errors. The agents wrote code in isolation — may have minor issues.
-
-### 4. First end-to-end run
-```bash
-cd ~/dev-loop
-# Create a test issue
-br add --title "Fix typo in README.md" --labels bug --labels "repo:prompt-bench"
-# Run TB-1
-uv run python -c "from devloop.feedback.pipeline import run_tb1; run_tb1('dl-XXX', '/home/musicofhel/prompt-bench')"
-```
-This will exercise: poll → claim → worktree → persona → heartbeat → claude --print → gates → retry/escalate → cleanup.
-
-### 5. Commit everything
-Nothing is committed to git in the dev-loop repo yet. All 25 Python files, 6 configs, and updated docs need to be committed.
-
-### 6. Re-score tools with real data
-After TB-1 runs, update scoring-rubric.md with actual experience data.
-
-## Key Architecture Decisions
-- **git worktree add** (not dmux) for programmatic orchestration — dmux scored 2/5 on MCP integration (TUI-only)
-- **anthropic SDK directly** for Gate 4 review — not DeepEval's evaluation framework (simpler, fewer deps)
-- **init_tracing() sets global provider** — all existing `trace.get_tracer()` calls across every layer auto-export to OpenObserve
-- **Fail-fast gates**: Gate 0 (sanity) → Gate 2 (gitleaks) → Gate 4 (review). Cheapest first.
-- **TB-1 minimal**: only 3 gates, 1 feedback channel. Full 8-gate + 7-channel system is target state.
+No API key required — uses existing Claude Code auth (Max subscription/OAuth).
 
 ## File Map
 ```
 ~/dev-loop/
-├── README.md
-├── CLAUDE.md
-├── pyproject.toml                         # Python deps: fastmcp, otel, httpx, deepeval, anthropic
-├── .env.example                           # ANTHROPIC_API_KEY + GITHUB_TOKEN only
-├── .gitignore
-├── justfile
-├── config/                                # 6 YAML configs
+├── CLAUDE.md, README.md, justfile, pyproject.toml, uv.lock
+├── config/
+│   ├── agents.yaml              # 5 personas
+│   ├── capabilities.yaml        # Tool/path scoping
+│   ├── dependencies.yaml        # Cross-repo cascade (TB-5)
+│   ├── review-gate.yaml         # LLM review criteria
+│   ├── scheduling.yaml          # Priority/budget (TB-4)
+│   └── projects/prompt-bench.yaml
 ├── src/devloop/
-│   ├── __init__.py, cli.py
-│   ├── intake/          (server.py, types.py, beads_poller.py)
-│   ├── orchestration/   (server.py, types.py)
-│   ├── runtime/         (server.py, types.py, deny_list.py)
-│   ├── gates/           (server.py, types.py)
-│   ├── observability/   (server.py, types.py, tracing.py, heartbeat.py)
-│   └── feedback/        (server.py, types.py, pipeline.py)
-├── test-fixtures/tickets/                 # 3 mock YAML tickets
-├── docs/                                  # 28+ doc files
-│   ├── layers/ (01-06), architecture, tracer-bullets, scoring-rubric, etc.
-│   └── adrs/ (001-008)
-└── .beads/                                # Issue tracking data (48 issues, all closed)
+│   ├── paths.py                 # Shared WORKTREE_BASE constant
+│   ├── intake/                  # Layer 1: beads polling + claiming
+│   ├── orchestration/           # Layer 2: worktree + persona
+│   ├── runtime/                 # Layer 3: claude --print spawn
+│   ├── gates/                   # Layer 4: sanity + gitleaks + review
+│   ├── observability/           # Layer 5: OTel + heartbeat
+│   └── feedback/                # Layer 6: retry + escalate + pipeline
+├── tests/                       # 85 unit tests, 7 files
+├── docs/                        # 28+ docs, 8 ADRs
+├── test-fixtures/tickets/       # 3 mock YAML tickets
+└── .beads/                      # 65 issues, all closed
 ```
 
-## Docker
-- **OpenObserve**: `docker start dev-loop-openobserve` → :5080 (must start Docker Desktop on Windows first)
-- Login: `admin@dev-loop.local` / `devloop123`
+## What's Next: TB-2
 
-## After TB-1 Passes
-- TB-2: Failure-to-retry (feedback path) — test retry loop with intentional gate failure
-- TB-3: Security gate (VibeForge or semgrep) — evaluate both during scoring
-- TB-4: Cost control — token proxy + budget enforcement
-- TB-5: Cross-repo cascade — prompt-bench → omniswipe-backend
-- TB-6: Session replay — AgentLens integration
+TB-1 is passing. Per docs/tracer-bullets.md, TB-2 is **Failure-to-Retry**:
+- Seed an issue that will intentionally fail gates
+- Verify retry loop extracts failure → re-prompts agent → agent fixes it
+- Both attempts visible as linked OTel traces
+- After max retries, issue correctly moves to "blocked"
+
+Note: Run #4 (factorial) already exercised the retry path successfully (failed Gate 0 on first attempt, passed on retry). TB-2 would formalize this with intentional failures and trace verification.
+
+Other TBs in order: TB-3 (security gate), TB-4 (cost control), TB-5 (cross-repo), TB-6 (session replay).
+
+## Docker
+- **OpenObserve**: `docker start dev-loop-openobserve` → :5080
+- Login: `admin@dev-loop.local` / `devloop123`
+- Must start Docker Desktop on Windows first for WSL2
+
+## Key Gotchas
+- `CLAUDECODE` env var must be unset for `claude --print` to work from within Claude Code
+- `--cwd` and `--message` are NOT valid claude CLI flags — use stdin pipe + subprocess `cwd=`
+- prompt-bench uses `[dependency-groups] dev` (not `[project.optional-dependencies]`) for `uv sync --dev` to install pytest
+- Gate 0 checks merge-base diff for committed changes, not just working tree
+- VIRTUAL_ENV must be cleared from subprocess env or uv in worktrees picks up the wrong venv
