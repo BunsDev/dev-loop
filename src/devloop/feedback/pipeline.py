@@ -1146,6 +1146,21 @@ def _seed_vulnerable_code(worktree_path: str) -> bool:
     dst = dst_dir / "search.py"
     shutil.copy2(src, dst)
     logger.info("Seeded TB-3 vulnerable code → %s", dst)
+
+    # Commit the seeded file so Gate 0 sees committed changes and
+    # Gate 3 scans committed code (agent's fix will be a separate commit)
+    subprocess.run(
+        ["git", "add", str(dst)],
+        cwd=worktree_path,
+        capture_output=True,
+        check=False,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Add user search endpoint (seeded for TB-3)"],
+        cwd=worktree_path,
+        capture_output=True,
+        check=False,
+    )
     return True
 
 
@@ -1418,48 +1433,15 @@ def run_tb3(
                 heartbeat_event = start_heartbeat(issue_id, interval_seconds=30)
 
             # ----------------------------------------------------------
-            # Phase 7: Initial agent spawn
+            # Phase 7: Pre-flight gate scan (catches seeded vulnerability)
             # ----------------------------------------------------------
+            # In TB-3, we run gates BEFORE the agent so Gate 3 catches
+            # the seeded vulnerability. The agent then gets the findings
+            # as context and must fix them.
             with tracer_tb3.start_as_current_span(
-                "tb3.phase.spawn_agent",
-                attributes={"tb3.phase": "spawn_agent", "tb3.attempt": 0},
-            ) as agent_span:
-                task_prompt = overlay_text or f"Fix issue: {issue_title}\n\n{issue_description}"
-
-                agent_result = spawn_agent(
-                    worktree_path=worktree_path,
-                    task_prompt=task_prompt,
-                    model=persona_result.get("model", "opus"),
-                )
-
-                agent_exit = agent_result.get("exit_code", -1)
-                agent_span.set_attribute("tb3.agent_exit_code", agent_exit)
-                attempt_span_ids.append(_span_id_hex(agent_span))
-
-                if agent_exit != 0:
-                    elapsed = time.monotonic() - pipeline_start
-                    return TB3Result(
-                        issue_id=issue_id,
-                        repo_path=repo_path,
-                        success=False,
-                        phase="spawn_agent",
-                        worktree_path=worktree_path,
-                        persona=persona_name,
-                        error=agent_result.get("stderr", "Agent failed"),
-                        max_retries=max_retries,
-                        duration_seconds=round(elapsed, 2),
-                        trace_id=root_trace_id,
-                        attempt_span_ids=attempt_span_ids,
-                        vuln_seeded=force_vuln_seed,
-                    ).model_dump()
-
-            # ----------------------------------------------------------
-            # Phase 8: Run quality gates (includes Gate 3 security)
-            # ----------------------------------------------------------
-            with tracer_tb3.start_as_current_span(
-                "tb3.phase.gates",
+                "tb3.phase.preflight_gates",
                 attributes={
-                    "tb3.phase": "gates",
+                    "tb3.phase": "preflight_gates",
                     "tb3.attempt": 0,
                 },
             ) as gates_span:
@@ -1478,7 +1460,7 @@ def run_tb3(
                         issue_id=issue_id,
                         repo_path=repo_path,
                         success=False,
-                        phase="gates",
+                        phase="preflight_gates",
                         worktree_path=worktree_path,
                         persona=persona_name,
                         error=error_msg,
@@ -1500,11 +1482,13 @@ def run_tb3(
                     gates_span.set_attribute("tb3.cwe_ids", ",".join(cwe_ids))
                     root_span.set_attribute("tb3.initial_cwe_ids", ",".join(cwe_ids))
 
-                # Record initial attempt
+                attempt_span_ids.append(_span_id_hex(gates_span))
+
+                # Record pre-flight scan result
                 retry_history.append(
                     RetryAttempt(
                         attempt=0,
-                        agent_exit_code=agent_exit,
+                        agent_exit_code=-1,  # no agent ran yet
                         gates_passed=gate_suite.overall_passed,
                         first_failure=gate_suite.first_failure,
                         span_id=attempt_span_ids[0] if attempt_span_ids else None,
@@ -1512,25 +1496,25 @@ def run_tb3(
                 )
 
             # ----------------------------------------------------------
-            # Phase 9: Gates passed on first try
+            # Phase 8: Check if gates already pass (no vulnerability found)
             # ----------------------------------------------------------
             if gate_suite.overall_passed:
                 elapsed = time.monotonic() - pipeline_start
                 logger.info(
-                    "TB-3: Gates passed on first attempt (%.1fs). "
+                    "TB-3: Pre-flight gates passed (%.1fs). "
                     "Security gate did NOT catch a vulnerability.",
                     elapsed,
                 )
-                root_span.set_attribute("tb3.outcome", "success_first_attempt")
+                root_span.set_attribute("tb3.outcome", "no_vulnerability_detected")
                 root_span.set_status(
                     trace.StatusCode.OK,
-                    "Gates passed on first attempt — no vulnerability detected",
+                    "Pre-flight scan found no vulnerability",
                 )
                 return TB3Result(
                     issue_id=issue_id,
                     repo_path=repo_path,
                     success=True,
-                    phase="gates_passed_first",
+                    phase="preflight_clean",
                     worktree_path=worktree_path,
                     persona=persona_name,
                     max_retries=max_retries,
@@ -1542,6 +1526,12 @@ def run_tb3(
                     vuln_seeded=force_vuln_seed,
                     retry_history=retry_history,
                 ).model_dump()
+
+            logger.info(
+                "TB-3 PRE-FLIGHT: Gate 3 caught vulnerability (CWEs: %s) — "
+                "feeding findings to agent for remediation",
+                cwe_ids,
+            )
 
             # ----------------------------------------------------------
             # Phase 10: Gates failed -> retry loop with span linking
@@ -1588,6 +1578,7 @@ def run_tb3(
                         gate_failures=all_gate_failures,
                         attempt=attempt,
                         max_retries=max_retries,
+                        model=persona_result.get("model", "opus"),
                     )
 
                     retry_success = retry_raw.get("success", False)

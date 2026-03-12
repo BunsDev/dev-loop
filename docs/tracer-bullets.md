@@ -114,14 +114,11 @@ just tb3 <issue_id> <repo_path>          # seeded mode (deterministic)
 just tb3-organic <issue_id> <repo_path>  # organic mode (relies on agent)
 ```
 
-### Status: CODE COMPLETE (2026-03-12)
-- Gate 3 (security SAST) implemented with bandit integration
-- `run_tb3()` pipeline with vulnerable code seeding + retry + CWE tracking
-- `TB3Result` with security findings, CWE IDs, vulnerability_fixed flag
-- Pre-seeded fixture: `test-fixtures/code/vulnerable_search.py` (CWE-89 x2)
-- bandit confirms detection: B608 CWE-89 on both SQL injection points
-- 23 unit tests (121 total)
-- Awaiting e2e run
+### Status: PASSING (2026-03-12)
+- 1 successful e2e run: seeded mode (55s, Gate 3 caught CWE-89 → retry → agent fixed → clean scan)
+- Pre-flight scan detects 2 SQL injection findings (B608 CWE-89 at lines 24, 43)
+- Agent uses parameterized queries on retry, vulnerability_fixed=true
+- 121 unit tests passing
 
 ---
 

@@ -213,19 +213,21 @@ def run_gate_0_sanity(worktree_path: str) -> dict:
                 diff_output = r.stdout.strip()
         # 3. Commits on this branch vs parent (agent may have committed)
         if not diff_output:
-            # Find the merge-base to detect new commits on the worktree branch
-            base_r = _run_cmd(
-                ["git", "merge-base", "HEAD", "HEAD~10"],
+            # Count commits and use a safe lookback (handles short histories)
+            count_r = _run_cmd(
+                ["git", "rev-list", "--count", "HEAD"],
                 cwd=worktree,
             )
-            if base_r.returncode == 0 and base_r.stdout.strip():
-                base = base_r.stdout.strip()
-                r = _run_cmd(
-                    ["git", "diff", base, "HEAD", "--stat"],
-                    cwd=worktree,
-                )
-                if r.stdout.strip():
-                    diff_output = r.stdout.strip()
+            if count_r.returncode == 0 and count_r.stdout.strip():
+                total = int(count_r.stdout.strip())
+                lookback = min(10, total - 1)
+                if lookback > 0:
+                    r = _run_cmd(
+                        ["git", "diff", f"HEAD~{lookback}", "HEAD", "--stat"],
+                        cwd=worktree,
+                    )
+                    if r.stdout.strip():
+                        diff_output = r.stdout.strip()
 
         if not diff_output:
             findings.append(
