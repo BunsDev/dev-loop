@@ -13,31 +13,32 @@ Every feature is a vertical slice through all six layers. No horizontal building
 | Layer | What happens | Minimal implementation |
 |-------|-------------|----------------------|
 | Intake | beads issue with no blockers detected | Poll `br ready --json` via MCP server |
-| Orchestration | Worktree created, agent assigned | `dmux` creates branch + worktree from issue metadata |
-| Runtime | Agent reads issue, modifies code, commits | Claude Code in worktree with scoped CLAUDE.md |
-| Quality Gates | DeepEval reviews the diff, gitleaks scans for secrets | LLM-as-judge review + secret scan (two gates, not all) |
-| Observability | Full trace visible in OpenObserve | OTel spans at each layer boundary, one dashboard |
+| Orchestration | Worktree created, agent assigned | `git worktree add` + persona selection from `config/agents.yaml` |
+| Runtime | Agent reads issue, modifies code, commits | `claude --print` via stdin pipe in worktree with scoped CLAUDE.md |
+| Quality Gates | Gate 0 sanity (tests), Gate 2 gitleaks (secrets), Gate 4 LLM review | Claude Code CLI `--json-schema` for review + gitleaks scan |
+| Observability | Full trace visible in OpenObserve | OTel spans at each layer boundary |
 | Feedback Loop | On gate failure, error fed back to agent for 1 retry | Simple retry with error context appended to prompt |
 
 ### Entry Criteria
 - beads workspace initialized with a test issue
 - prompt-bench repo cloned and configured as test target
 - OpenObserve running (Docker)
-- dmux installed
-- DeepEval + gitleaks configured
+- gitleaks installed (`shutil.which` or `~/.local/bin`)
 
 ### Exit Criteria
 - Issue moves from open → closed without human intervention
-- PR exists on GitHub with DeepEval review comments
+- All gates pass (Gate 0 sanity + Gate 2 secrets + Gate 4 review)
 - Full trace visible in OpenObserve (intake → orchestration → runtime → gate → outcome)
-- On intentional failure (bad issue), agent retries once then marks issue "blocked"
+- On gate failure, agent retries once with error context
 
 ### Command
 ```bash
-just tb1                    # full run
-just tb1 --dry-run          # trace the path without executing
-just tb1 --skip-review      # bypass DeepEval review gate
+just tb1 <issue_id> <repo_path>    # full run
 ```
+
+### Status: PASSING (2026-03-12)
+- 2 successful e2e runs: bug fix (94s), feature add (245s with 1 retry)
+- 85 unit tests passing
 
 ---
 
@@ -49,28 +50,36 @@ just tb1 --skip-review      # bypass DeepEval review gate
 
 | Layer | What happens | Minimal implementation |
 |-------|-------------|----------------------|
-| Intake | Issue that will intentionally fail (e.g., references nonexistent file) | Seed issue in beads with known-bad description |
-| Orchestration | Same as TB-1 | dmux worktree |
-| Runtime | Agent attempts work, produces broken output | Agent runs, generates code that won't pass gate |
-| Quality Gates | Gate fails with structured error | DeepEval or ATDD returns failure reason |
-| Observability | Failure trace captured with full context | OTel span marked as ERROR, AgentLens session saved |
-| Feedback Loop | Error parsed, context injected, agent retried | Retry orchestrator extracts failure → re-prompts agent |
+| Intake | Issue that will intentionally fail gates | Seed issue with pre-seeded tricky test in prompt-bench |
+| Orchestration | Same as TB-1 | `git worktree add` + persona selection |
+| Runtime | Agent attempts work, produces code that fails pre-seeded tests | `claude --print` via stdin pipe |
+| Quality Gates | Gate 0 fails with structured pytest error | Gate 0 catches test failures, returns error context |
+| Observability | Failure trace captured, linked across attempts | OTel spans with explicit links between retry attempts |
+| Feedback Loop | Error parsed, context injected, agent retried | Retry with accumulated gate failures in prompt |
 
 ### Entry Criteria
 - TB-1 passes (golden path works)
-- AgentLens configured for session capture
+- OpenObserve running (Docker)
 
 ### Exit Criteria
 - Agent fails → retries with error context → succeeds on retry
-- Both attempts visible as linked traces in OpenObserve
-- AgentLens shows side-by-side comparison of attempt 1 vs attempt 2
-- After max retries, issue correctly moves to "blocked"
+- Both attempts visible as linked OTel traces (shared trace_id, span links)
+- Agent stdout and gate results captured per attempt (retry_history)
+- After max retries, issue correctly moves to "blocked" (verified programmatically)
 
 ### Command
 ```bash
-just tb2                    # run with seeded failure issue
-just tb2 --max-retries 3    # override retry count
+just tb2 <issue_id> <repo_path>          # organic mode (tricky issue)
+just tb2-force <issue_id> <repo_path>    # forced first-attempt failure
 ```
+
+### Status: PASSING (2026-03-12)
+- 3 successful e2e runs:
+  - Forced failure mode: 202s (forced Gate 0 fail → retry → pass)
+  - Organic mode: 134s (pre-seeded test trap caught missing edge case → retry → pass)
+  - Escalation path: 41s (max_retries=0 + forced fail → blocked_verified=true)
+- OTel span linking works (attempt_span_ids captured per run)
+- `_verify_blocked_status()` confirms beads status = "blocked" after escalation
 
 ---
 
@@ -83,7 +92,7 @@ just tb2 --max-retries 3    # override retry count
 | Layer | What happens | Minimal implementation |
 |-------|-------------|----------------------|
 | Intake | Issue that will produce code with a known vulnerability | Seed issue: "add user input to SQL query" |
-| Orchestration | Same worktree flow | dmux |
+| Orchestration | Same worktree flow | `git worktree add` + persona |
 | Runtime | Agent writes vulnerable code (SQL injection, XSS, etc.) | Agent follows issue literally |
 | Quality Gates | VibeForge catches the vulnerability | VibeForge Scanner on the diff, returns structured finding |
 | Observability | Security finding logged with CWE/OWASP classification | OTel span with security.finding attributes |
@@ -115,7 +124,7 @@ just tb3 --vuln sqlinjection  # specific vulnerability type
 | Layer | What happens | Minimal implementation |
 |-------|-------------|----------------------|
 | Intake | Issue with intentionally vague/large scope | Seed issue: "refactor the entire codebase" |
-| Orchestration | Agent assigned with cost ceiling | dmux + cost limit passed to runtime config |
+| Orchestration | Agent assigned with cost ceiling | `git worktree add` + cost limit in runtime config |
 | Runtime | Token proxy tracks spend per API call | OTel-instrumented proxy between agent and LLM API |
 | Quality Gates | Cost gate checks total spend before PR creation | Threshold comparison (spent vs budget) |
 | Observability | Real-time cost dashboard in OpenObserve | Token counts + model pricing → dollar amounts |
@@ -180,7 +189,7 @@ just tb5 --source prompt-bench --target omniswipe-backend
 | Layer | What happens | Minimal implementation |
 |-------|-------------|----------------------|
 | Intake | Any issue (reuse TB-2's failure case) | Existing issue |
-| Orchestration | Normal flow | dmux |
+| Orchestration | Normal flow | `git worktree add` + persona |
 | Runtime | Agent session fully captured | AgentLens recording every tool call, context state, decision |
 | Quality Gates | Gate failure triggers session save | On failure, session marked for review |
 | Observability | Session browsable in AgentLens, linked to OTel trace | AgentLens UI shows timeline, tool calls, context window |

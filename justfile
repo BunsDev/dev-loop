@@ -60,10 +60,18 @@ tb1 ISSUE_ID REPO_PATH:
     uv run python -c "from devloop.feedback.pipeline import run_tb1; import json; print(json.dumps(run_tb1('{{ISSUE_ID}}', '{{REPO_PATH}}'), indent=2))"
 
 # TB-2: Failure-to-retry (feedback path)
-tb2 *ARGS:
+# Usage: just tb2 <issue_id> <repo_path>
+# Force first gate failure: just tb2-force <issue_id> <repo_path>
+tb2 ISSUE_ID REPO_PATH:
     @echo "Running TB-2: Failure-to-Retry"
-    @echo "Requires: TB-1 passing"
-    @echo "Args: {{ARGS}}"
+    @echo "Issue: {{ISSUE_ID}} | Repo: {{REPO_PATH}}"
+    uv run python -c "from devloop.feedback.pipeline import run_tb2; import json; print(json.dumps(run_tb2('{{ISSUE_ID}}', '{{REPO_PATH}}'), indent=2))"
+
+# TB-2 with forced first-attempt gate failure (deterministic retry path)
+tb2-force ISSUE_ID REPO_PATH:
+    @echo "Running TB-2: Failure-to-Retry (FORCED FIRST FAILURE)"
+    @echo "Issue: {{ISSUE_ID}} | Repo: {{REPO_PATH}}"
+    uv run python -c "from devloop.feedback.pipeline import run_tb2; import json; print(json.dumps(run_tb2('{{ISSUE_ID}}', '{{REPO_PATH}}', force_gate_fail=True), indent=2))"
 
 # TB-3: Security gate (safety path)
 tb3 *ARGS:

@@ -1,133 +1,98 @@
 # dev-loop Handoff — 2026-03-12
 
-## Status: TB-1 PASSING
+## Status: TB-2 PASSING
 
-TB-1 is fully operational. Two successful end-to-end runs completed:
-- **Bug fix** (modulo zero-guard): 94s, all gates passed first try
-- **Feature add** (factorial function): 245s, failed Gate 0 on first try, succeeded on retry
+TB-1 and TB-2 are both fully operational.
+
+### TB-1 (Golden Path) — PASSING
+- Bug fix: 94s, all gates passed first try
+- Feature add: 245s, failed Gate 0 → succeeded on retry
+
+### TB-2 (Failure-to-Retry) — PASSING
+- **Forced mode**: 202s — forced Gate 0 failure → retry with error context → pass
+- **Organic mode**: 134s — pre-seeded test trap caught missing edge case → retry → pass
+- **Escalation path**: 41s — max_retries=0 + forced fail → issue status verified as "blocked"
 
 ## What Was Done This Session
 
-### 1. Created beads issues from handoff, executed all 17
-Previous session left 6 TODO items. Created beads for each, added dependencies, executed in order. Then audited the codebase with fresh eyes, found 8 more issues, created and executed those too. Plus 2 test issues for real TB-1 runs.
+### 1. Updated docs/tracer-bullets.md
+Replaced all dmux and DeepEval references with actual TB-1 implementation (Claude Code CLI, `git worktree add`). Added TB-1 and TB-2 passing status sections.
 
-### 2. Wired justfile + populated prompt-bench
-- `just tb1 <issue_id> <repo_path>` now calls `run_tb1()` with JSON output
-- `~/prompt-bench` has a real Python project: calculator module (add, subtract, multiply, divide, power, modulo) with 5 pytest tests, pyproject.toml with `[dependency-groups] dev`
+### 2. Implemented TB-2: Failure-to-Retry
+Full vertical slice through all 6 layers:
 
-### 3. Lint pass (13 errors → 0)
-Fixed f-string placeholders, ambiguous variable names, line lengths, unused variables, import ordering, aliased errors.
+- **Types** (`feedback/types.py`): Added `TB2Result` with trace_id, attempt_span_ids, blocked_verified, force_gate_fail_used, retry_history fields. Added `RetryAttempt` model.
+- **Pipeline** (`feedback/pipeline.py`): Added `run_tb2()` with:
+  - Pre-seeded test fixture injection (Phase 3.5)
+  - Force-gate-fail mode for deterministic retry testing
+  - OTel span linking between retry attempts (`opentelemetry.trace.Link`)
+  - Blocked status verification after escalation
+  - OTel force-flush after pipeline completion
+  - Worktree preservation on escalation for post-mortem
+- **Test fixtures**: Updated `test-fixtures/tickets/tb2-failure.yaml` (factorial issue), created `test-fixtures/tests/test_factorial_trap.py` (edge case trap: float input, negative input, exact message matching)
+- **Justfile**: Wired `just tb2` and `just tb2-force` commands
 
-### 4. Git committed (6 commits on main)
-```
-61f708a Re-score tools with real TB-1 data from 4 pipeline runs
-a75cbe9 Fix Gate 0: detect committed changes and install worktree deps correctly
-d1663fc Add 85 unit tests across 7 test files
-f243c62 Harden TB-1 pipeline: timeouts, error handling, portability
-1e368a5 Fix CLI integration: use stdin for prompts, unset CLAUDECODE for nesting
-898caad TB-1 code-complete: 6 MCP servers, pipeline orchestrator, full OSS stack
-```
+### 3. Fixed `_verify_blocked_status()` parser
+`br show --format json` returns a JSON array, not object. Added list unwrapping.
 
-### 5. CLI integration fixes (discovered during first e2e runs)
-- **CLAUDECODE env var** blocks nested `claude --print` — now unset before spawn
-- **`--cwd` and `--message` not valid flags** — switched to stdin pipe for prompts
-- **anthropic SDK replaced** with `claude --print` for Gate 4 review — no API key needed
-- **`--json-schema`** added for structured Gate 4 review output
+### 4. Added pytest testpaths config
+`test-fixtures/tests/` was being collected by pytest. Added `[tool.pytest.ini_options] testpaths = ["tests"]` to pyproject.toml.
 
-### 6. Hardening (8 issues)
-- timeout=30 on all `br` subprocess calls (3 files)
-- GateSuiteResult guard with try/except in retry and pipeline
-- WORKTREE_BASE extracted to shared `paths.py`, configurable via `DEVLOOP_WORKTREE_DIR`
-- gitleaks resolution: `shutil.which()` first, `~/.local/bin` fallback, clear error if missing
-- Atomic heartbeat metadata writes (tempfile + os.replace)
-- Dead code removed (`_find_session_output`)
-- VIRTUAL_ENV cleaned from gate subprocess env
+### 5. Unit tests (13 new, 98 total)
+- `test_tb2_helpers.py` — forced failure, fixture seeding, blocked verification, TB2Result model
 
-### 7. Gate 0 fixes (discovered during real runs)
-- Detect committed changes via merge-base diff (not just unstaged/staged)
-- `uv sync --dev` installs `[dependency-groups] dev` (pytest) in worktree
-- Clean VIRTUAL_ENV from subprocess env to avoid venv conflicts
-
-### 8. Unit tests (85 tests, 7 files)
-- test_beads_poller.py (17) — poll, claim, WorkItem properties
-- test_deny_list.py (30) — is_path_denied parametrized across all patterns
-- test_orchestration.py (13) — persona matching, config loading
-- test_gates.py (8) — gitleaks discovery, project type detection
-- test_heartbeat.py (5) — stale runs, start/stop heartbeat
-- test_paths.py (3) — default path, env var override
-
-### 9. Re-scored tools with real data
-Key finding: **Claude Code CLI replaces both DeepEval and dmux** for TB-1.
-- dmux downgraded 0.80→0.65 (TUI-only, can't automate)
-- gitleaks upgraded 0.86→0.88 (fast, zero false positives)
-- Claude Code CLI scored 0.90 (new entry — agent spawn + LLM review)
+### 6. Created 5 beads for TB-2 (all closed)
+- dl-jd4.6 through dl-jd4.10 under TB-2 epic
 
 ## Architecture (Current)
 
 ```
-just tb1 <issue_id> <repo_path>
-    → run_tb1() in feedback/pipeline.py
-        → Phase 1: poll_ready() — br ready --json
-        → Phase 2: claim_issue() — br update --claim
-        → Phase 3: setup_worktree() — git worktree add
-        → Phase 4: select_persona() + build_claude_md_overlay()
-        → Phase 5: init_tracing() — OTel → OpenObserve
-        → Phase 6: start_heartbeat() — background thread
-        → Phase 7: spawn_agent() — claude --print via stdin
-        → Phase 8: run_all_gates() — Gate 0 → Gate 2 → Gate 4
-        → Phase 9: gates pass → success
-        → Phase 10: gates fail → retry with error context
-        → Phase 11: retries exhausted → escalate_to_human()
-        → Phase 12: cleanup — stop heartbeat, remove worktree
+just tb2 <issue_id> <repo_path>
+    → run_tb2() in feedback/pipeline.py
+        → Phase 1:   poll_ready() — br ready --json
+        → Phase 2:   claim_issue() — br update --claim
+        → Phase 3:   setup_worktree() — git worktree add
+        → Phase 3.5: seed_test_fixture() — copy trap test into worktree
+        → Phase 4:   select_persona() + build_claude_md_overlay()
+        → Phase 5:   init_tracing() — OTel → OpenObserve
+        → Phase 6:   start_heartbeat() — background thread
+        → Phase 7:   spawn_agent() — claude --print via stdin
+        → Phase 8:   run_all_gates() or _make_forced_failure()
+        → Phase 9:   gates pass → success (note: retry path not exercised)
+        → Phase 10:  gates fail → retry with span links (Link to previous)
+        → Phase 11:  retries exhausted → escalate + verify_blocked_status()
+        → Phase 12:  cleanup — stop heartbeat, preserve worktree on escalation
+        → Flush:     provider.force_flush() for trace verification
 ```
 
-No API key required — uses existing Claude Code auth (Max subscription/OAuth).
-
-## File Map
+## File Map (TB-2 additions)
 ```
-~/dev-loop/
-├── CLAUDE.md, README.md, justfile, pyproject.toml, uv.lock
-├── config/
-│   ├── agents.yaml              # 5 personas
-│   ├── capabilities.yaml        # Tool/path scoping
-│   ├── dependencies.yaml        # Cross-repo cascade (TB-5)
-│   ├── review-gate.yaml         # LLM review criteria
-│   ├── scheduling.yaml          # Priority/budget (TB-4)
-│   └── projects/prompt-bench.yaml
-├── src/devloop/
-│   ├── paths.py                 # Shared WORKTREE_BASE constant
-│   ├── intake/                  # Layer 1: beads polling + claiming
-│   ├── orchestration/           # Layer 2: worktree + persona
-│   ├── runtime/                 # Layer 3: claude --print spawn
-│   ├── gates/                   # Layer 4: sanity + gitleaks + review
-│   ├── observability/           # Layer 5: OTel + heartbeat
-│   └── feedback/                # Layer 6: retry + escalate + pipeline
-├── tests/                       # 85 unit tests, 7 files
-├── docs/                        # 28+ docs, 8 ADRs
-├── test-fixtures/tickets/       # 3 mock YAML tickets
-└── .beads/                      # 65 issues, all closed
+src/devloop/feedback/
+├── pipeline.py          # run_tb1() + run_tb2() + TB-2 helpers
+├── types.py             # TB1Result, TB2Result, RetryAttempt
+└── server.py            # retry_agent(), escalate_to_human() (unchanged)
+
+test-fixtures/
+├── tickets/tb2-failure.yaml     # Factorial issue with edge cases
+└── tests/test_factorial_trap.py # Pre-seeded test trap (float, negative, message match)
+
+tests/
+└── test_tb2_helpers.py  # 13 tests for TB-2 helpers
 ```
 
-## What's Next: TB-2
+## What's Next: TB-3
 
-TB-1 is passing. Per docs/tracer-bullets.md, TB-2 is **Failure-to-Retry**:
-- Seed an issue that will intentionally fail gates
-- Verify retry loop extracts failure → re-prompts agent → agent fixes it
-- Both attempts visible as linked OTel traces
-- After max retries, issue correctly moves to "blocked"
+TB-2 is passing. Per docs/tracer-bullets.md, TB-3 is **Security-Gate-to-Fix**:
+- Seed issue that produces code with a known vulnerability
+- VibeForge Scanner catches it (or equivalent security scanner)
+- Agent self-remediates based on structured finding
+- Security finding appears in OpenObserve with CWE classification
 
-Note: Run #4 (factorial) already exercised the retry path successfully (failed Gate 0 on first attempt, passed on retry). TB-2 would formalize this with intentional failures and trace verification.
-
-Other TBs in order: TB-3 (security gate), TB-4 (cost control), TB-5 (cross-repo), TB-6 (session replay).
-
-## Docker
-- **OpenObserve**: `docker start dev-loop-openobserve` → :5080
-- Login: `admin@dev-loop.local` / `devloop123`
-- Must start Docker Desktop on Windows first for WSL2
+Other TBs in order: TB-4 (cost control), TB-5 (cross-repo), TB-6 (session replay).
 
 ## Key Gotchas
-- `CLAUDECODE` env var must be unset for `claude --print` to work from within Claude Code
-- `--cwd` and `--message` are NOT valid claude CLI flags — use stdin pipe + subprocess `cwd=`
-- prompt-bench uses `[dependency-groups] dev` (not `[project.optional-dependencies]`) for `uv sync --dev` to install pytest
-- Gate 0 checks merge-base diff for committed changes, not just working tree
-- VIRTUAL_ENV must be cleared from subprocess env or uv in worktrees picks up the wrong venv
+- `br show --format json` returns a JSON array (list), not a dict
+- `br create` uses `--labels` (plural), not `--label`; no `--epic` flag, use `--parent`
+- Pre-seeded test trap is the key to organic TB-2 failures — the `float(5.0)` TypeError check is what agents miss most often
+- `provider.force_flush()` needed after pipeline to ensure spans export before verification
+- Worktree preserved on escalation (`keep_worktree_on_failure` logic)

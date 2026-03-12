@@ -79,3 +79,52 @@ class TB1Result(BaseModel):
     escalated: bool = False
     error: str | None = None
     duration_seconds: float = 0.0
+
+
+class RetryAttempt(BaseModel):
+    """Summary of a single retry attempt for TB-2 tracking."""
+
+    attempt: int
+    agent_exit_code: int = -1
+    gates_passed: bool = False
+    first_failure: str | None = None
+    span_id: str | None = None
+
+
+class TB2Result(BaseModel):
+    """Result of a full TB-2 pipeline run."""
+
+    issue_id: str
+    repo_path: str
+    success: bool
+    phase: str = Field(
+        description="Last phase completed (or failed at).",
+    )
+    worktree_path: str | None = None
+    persona: str | None = None
+    retries_used: int = 0
+    max_retries: int = 0
+    escalated: bool = False
+    error: str | None = None
+    duration_seconds: float = 0.0
+    # TB-2 specific fields
+    trace_id: str | None = Field(
+        default=None,
+        description="Root OTel trace ID for trace verification.",
+    )
+    attempt_span_ids: list[str] = Field(
+        default_factory=list,
+        description="Span IDs per attempt for linked trace verification.",
+    )
+    blocked_verified: bool = Field(
+        default=False,
+        description="True if issue status was verified as 'blocked' after escalation.",
+    )
+    force_gate_fail_used: bool = Field(
+        default=False,
+        description="Whether forced gate failure mode was active.",
+    )
+    retry_history: list[RetryAttempt] = Field(
+        default_factory=list,
+        description="Per-attempt summary with gate results and span IDs.",
+    )
