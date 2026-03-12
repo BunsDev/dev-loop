@@ -13,6 +13,7 @@ class Finding(BaseModel):
     file: str | None = None
     line: int | None = None
     rule: str | None = None
+    cwe: str | None = None  # e.g. "CWE-89" for SQL injection
 
 
 class GateResult(BaseModel):

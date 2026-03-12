@@ -74,10 +74,18 @@ tb2-force ISSUE_ID REPO_PATH:
     uv run python -c "from devloop.feedback.pipeline import run_tb2; import json; print(json.dumps(run_tb2('{{ISSUE_ID}}', '{{REPO_PATH}}', force_gate_fail=True), indent=2))"
 
 # TB-3: Security gate (safety path)
-tb3 *ARGS:
-    @echo "Running TB-3: Security-Gate-to-Fix"
-    @echo "Requires: TB-1 + TB-2 passing"
-    @echo "Args: {{ARGS}}"
+# Usage: just tb3 <issue_id> <repo_path>
+# Organic (no vuln seed): just tb3-organic <issue_id> <repo_path>
+tb3 ISSUE_ID REPO_PATH:
+    @echo "Running TB-3: Security-Gate-to-Fix (seeded vulnerability)"
+    @echo "Issue: {{ISSUE_ID}} | Repo: {{REPO_PATH}}"
+    uv run python -c "from devloop.feedback.pipeline import run_tb3; import json; print(json.dumps(run_tb3('{{ISSUE_ID}}', '{{REPO_PATH}}'), indent=2))"
+
+# TB-3 without pre-seeded vulnerability (organic — relies on agent writing vuln code)
+tb3-organic ISSUE_ID REPO_PATH:
+    @echo "Running TB-3: Security-Gate-to-Fix (organic — no seed)"
+    @echo "Issue: {{ISSUE_ID}} | Repo: {{REPO_PATH}}"
+    uv run python -c "from devloop.feedback.pipeline import run_tb3; import json; print(json.dumps(run_tb3('{{ISSUE_ID}}', '{{REPO_PATH}}', force_vuln_seed=False), indent=2))"
 
 # TB-4: Cost control (budget path)
 tb4 *ARGS:

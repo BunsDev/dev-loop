@@ -51,6 +51,11 @@ def _find_gitleaks() -> str | None:
     return None
 
 
+def _find_bandit() -> str | None:
+    """Find bandit binary on PATH."""
+    return shutil.which("bandit")
+
+
 def _load_review_config() -> dict:
     """Load the review gate YAML config."""
     if _CONFIG_PATH.exists():
@@ -476,6 +481,199 @@ def run_gate_2_secrets(worktree_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Gate 3: Security Scan (SAST)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    description=(
+        "Gate 3 — Security SAST scan: runs bandit on Python code to detect "
+        "security vulnerabilities (SQL injection, hardcoded passwords, shell "
+        "injection, etc.) with CWE classification. Skips gracefully if bandit "
+        "is not installed."
+    ),
+    tags={"gates", "security"},
+)
+def run_gate_3_security(worktree_path: str) -> dict:
+    """Run SAST security scan on the worktree."""
+    with tracer.start_as_current_span(
+        "gates.gate_3_security",
+        attributes={"gate.name": "security", "gate.order": 3},
+    ) as span:
+        start = time.monotonic()
+        worktree = Path(worktree_path)
+        findings: list[Finding] = []
+
+        # --- Check worktree exists ---
+        if not worktree.is_dir():
+            elapsed = time.monotonic() - start
+            span.set_status(trace.StatusCode.ERROR, "Worktree does not exist")
+            return GateResult(
+                gate_name="gate_3_security",
+                passed=False,
+                findings=[Finding(severity="critical", message=f"Worktree not found: {worktree}")],
+                duration_seconds=round(elapsed, 3),
+                error=f"Worktree not found: {worktree}",
+            ).model_dump()
+
+        # --- Detect project type ---
+        project_type = _detect_project_type(worktree)
+        span.set_attribute("gate.project_type", project_type)
+
+        if project_type != "python":
+            elapsed = time.monotonic() - start
+            span.set_attribute("gate.status", "skipped")
+            span.set_status(trace.StatusCode.OK, f"Skipped — {project_type} project")
+            return GateResult(
+                gate_name="gate_3_security",
+                passed=True,
+                findings=[
+                    Finding(
+                        severity="info",
+                        message=f"Security scan skipped for {project_type} project (Python only)",
+                    )
+                ],
+                duration_seconds=round(elapsed, 3),
+                skipped=True,
+            ).model_dump()
+
+        # --- Resolve bandit binary ---
+        bandit_bin = _find_bandit()
+        if bandit_bin is None:
+            elapsed = time.monotonic() - start
+            span.set_attribute("gate.status", "skipped")
+            span.set_status(trace.StatusCode.OK, "Skipped — bandit not installed")
+            return GateResult(
+                gate_name="gate_3_security",
+                passed=True,
+                findings=[
+                    Finding(
+                        severity="warning",
+                        message=(
+                            "bandit not found on PATH — security scan skipped. "
+                            "Install: pip install bandit"
+                        ),
+                    )
+                ],
+                duration_seconds=round(elapsed, 3),
+                skipped=True,
+            ).model_dump()
+
+        # --- Determine scan target ---
+        # Prefer src/ directory if it exists, otherwise scan the whole worktree
+        scan_target = worktree / "src"
+        if not scan_target.is_dir():
+            scan_target = worktree
+
+        # --- Run bandit ---
+        exclusions = ",".join([
+            str(worktree / ".git"),
+            str(worktree / ".venv"),
+            str(worktree / "__pycache__"),
+            str(worktree / "node_modules"),
+        ])
+
+        result = _run_cmd(
+            [
+                bandit_bin,
+                "-r",
+                str(scan_target),
+                "-f", "json",
+                "-x", exclusions,
+            ],
+            cwd=worktree,
+            timeout=120,
+        )
+
+        # bandit exit codes: 0=no issues, 1=issues found, 2=error
+        if result.returncode == 2:
+            elapsed = time.monotonic() - start
+            error_msg = f"bandit error: {result.stderr.strip()[:500]}"
+            span.set_status(trace.StatusCode.ERROR, error_msg)
+            return GateResult(
+                gate_name="gate_3_security",
+                passed=False,
+                findings=[Finding(severity="critical", message=error_msg)],
+                duration_seconds=round(elapsed, 3),
+                error=error_msg,
+            ).model_dump()
+
+        # --- Parse bandit JSON output ---
+        try:
+            report = json.loads(result.stdout)
+            for item in report.get("results", []):
+                severity = item.get("issue_severity", "MEDIUM").upper()
+                cwe_info = item.get("issue_cwe", {})
+                cwe_id = f"CWE-{cwe_info.get('id', '?')}" if cwe_info else None
+
+                # Map bandit severity to our severity levels
+                if severity == "HIGH":
+                    finding_severity = "critical"
+                elif severity == "MEDIUM":
+                    finding_severity = "critical"
+                else:
+                    finding_severity = "warning"
+
+                # Get relative file path
+                file_path = item.get("filename", "")
+                try:
+                    file_path = str(Path(file_path).relative_to(worktree))
+                except ValueError:
+                    pass
+
+                findings.append(
+                    Finding(
+                        severity=finding_severity,
+                        message=(
+                            f"{item.get('issue_text', 'Security issue')}"
+                            f"{f' [{cwe_id}]' if cwe_id else ''}"
+                        ),
+                        file=file_path,
+                        line=item.get("line_number"),
+                        rule=item.get("test_id"),
+                        cwe=cwe_id,
+                    )
+                )
+
+                # Set CWE as span attribute for observability
+                if cwe_id:
+                    span.set_attribute(f"security.finding.{item.get('test_id', 'unknown')}", cwe_id)
+
+        except json.JSONDecodeError:
+            if result.stdout.strip():
+                findings.append(
+                    Finding(
+                        severity="warning",
+                        message=f"Could not parse bandit JSON output: {result.stdout[:200]}",
+                    )
+                )
+
+        # --- Determine pass/fail ---
+        passed = not any(f.severity == "critical" for f in findings)
+
+        elapsed = time.monotonic() - start
+        span.set_attribute("gate.status", "pass" if passed else "fail")
+        span.set_attribute("gate.duration_ms", round(elapsed * 1000))
+        span.set_attribute("gate.findings_count", len(findings))
+        span.set_attribute("gate.scanner", "bandit")
+
+        if not passed:
+            cwe_list = [f.cwe for f in findings if f.cwe]
+            if cwe_list:
+                span.set_attribute("security.cwe_ids", ",".join(cwe_list))
+            span.set_status(trace.StatusCode.ERROR, "Gate 3 security scan found vulnerabilities")
+        else:
+            span.set_status(trace.StatusCode.OK)
+
+        return GateResult(
+            gate_name="gate_3_security",
+            passed=passed,
+            findings=findings,
+            duration_seconds=round(elapsed, 3),
+        ).model_dump()
+
+
+# ---------------------------------------------------------------------------
 # Gate 4: LLM-as-Judge Code Review
 # ---------------------------------------------------------------------------
 
@@ -724,8 +922,8 @@ def run_gate_4_review(
 
 @mcp.tool(
     description=(
-        "Run all TB-1 quality gates in fail-fast order: "
-        "Gate 0 (sanity) → Gate 2 (secrets) → Gate 4 (review). "
+        "Run all quality gates in fail-fast order: "
+        "Gate 0 (sanity) → Gate 2 (secrets) → Gate 3 (security) → Gate 4 (review). "
         "Stops at first failure. Returns overall pass/fail with per-gate results."
     ),
     tags={"gates", "suite"},
@@ -735,7 +933,7 @@ def run_all_gates(
     issue_title: str,
     issue_description: str,
 ) -> dict:
-    """Run gates 0 → 2 → 4 sequentially, stopping at first failure."""
+    """Run gates 0 → 2 → 3 → 4 sequentially, stopping at first failure."""
     with tracer.start_as_current_span(
         "gates.run_all",
         attributes={"gate.name": "run_all"},
@@ -743,6 +941,7 @@ def run_all_gates(
         suite_start = time.monotonic()
         gate_results: list[GateResult] = []
         first_failure: str | None = None
+        total_gates = 4
 
         # --- Gate 0: Sanity ---
         g0_raw = run_gate_0_sanity(worktree_path)
@@ -752,7 +951,7 @@ def run_all_gates(
         if not g0.passed:
             first_failure = g0.gate_name
             elapsed = time.monotonic() - suite_start
-            span.set_attribute("gates.total", 3)
+            span.set_attribute("gates.total", total_gates)
             span.set_attribute("gates.passed", 0)
             span.set_attribute("gates.failed", 1)
             span.set_attribute("gates.first_failure", first_failure)
@@ -774,7 +973,29 @@ def run_all_gates(
             first_failure = g2.gate_name
             elapsed = time.monotonic() - suite_start
             passed_count = sum(1 for g in gate_results if g.passed)
-            span.set_attribute("gates.total", 3)
+            span.set_attribute("gates.total", total_gates)
+            span.set_attribute("gates.passed", passed_count)
+            span.set_attribute("gates.failed", 1)
+            span.set_attribute("gates.first_failure", first_failure)
+            span.set_attribute("gates.total_duration_ms", round(elapsed * 1000))
+            span.set_status(trace.StatusCode.ERROR, f"Failed at {first_failure}")
+            return GateSuiteResult(
+                overall_passed=False,
+                gate_results=gate_results,
+                first_failure=first_failure,
+                total_duration_seconds=round(elapsed, 3),
+            ).model_dump()
+
+        # --- Gate 3: Security ---
+        g3_raw = run_gate_3_security(worktree_path)
+        g3 = GateResult(**g3_raw)
+        gate_results.append(g3)
+
+        if not g3.passed and not g3.skipped:
+            first_failure = g3.gate_name
+            elapsed = time.monotonic() - suite_start
+            passed_count = sum(1 for g in gate_results if g.passed)
+            span.set_attribute("gates.total", total_gates)
             span.set_attribute("gates.passed", passed_count)
             span.set_attribute("gates.failed", 1)
             span.set_attribute("gates.first_failure", first_failure)
@@ -796,11 +1017,11 @@ def run_all_gates(
             first_failure = g4.gate_name
 
         elapsed = time.monotonic() - suite_start
-        overall_passed = all(g.passed for g in gate_results)
+        overall_passed = all(g.passed or g.skipped for g in gate_results)
         passed_count = sum(1 for g in gate_results if g.passed)
-        failed_count = sum(1 for g in gate_results if not g.passed)
+        failed_count = sum(1 for g in gate_results if not g.passed and not g.skipped)
 
-        span.set_attribute("gates.total", 3)
+        span.set_attribute("gates.total", total_gates)
         span.set_attribute("gates.passed", passed_count)
         span.set_attribute("gates.failed", failed_count)
         span.set_attribute("gates.total_duration_ms", round(elapsed * 1000))

@@ -91,27 +91,37 @@ just tb2-force <issue_id> <repo_path>    # forced first-attempt failure
 
 | Layer | What happens | Minimal implementation |
 |-------|-------------|----------------------|
-| Intake | Issue that will produce code with a known vulnerability | Seed issue: "add user input to SQL query" |
-| Orchestration | Same worktree flow | `git worktree add` + persona |
-| Runtime | Agent writes vulnerable code (SQL injection, XSS, etc.) | Agent follows issue literally |
-| Quality Gates | VibeForge catches the vulnerability | VibeForge Scanner on the diff, returns structured finding |
-| Observability | Security finding logged with CWE/OWASP classification | OTel span with security.finding attributes |
-| Feedback Loop | Finding fed back to agent with fix guidance | Agent re-generates code addressing the specific CWE |
+| Intake | Issue that will produce code with a known vulnerability | Seed issue: "add user search with raw SQL" |
+| Orchestration | `git worktree add` + security-fix persona | `git worktree add` + `config/agents.yaml` security-fix persona |
+| Runtime | Agent writes vulnerable code (SQL injection) | `claude --print` via stdin pipe, follows ticket literally |
+| Quality Gates | Gate 3 (bandit SAST) catches vulnerability | `bandit -r src/ -f json` → structured Finding with CWE-89 |
+| Observability | Security finding logged with CWE classification | OTel span with `security.cwe_ids`, `security.finding.B608` attributes |
+| Feedback Loop | Finding fed back to agent with CWE context | Agent re-generates code using parameterized queries |
 
 ### Entry Criteria
 - TB-1 and TB-2 pass
-- VibeForge Scanner configured with security rules
+- bandit installed (`pip install bandit` or `uv sync`)
 
 ### Exit Criteria
-- Agent produces vulnerable code → VibeForge catches it → agent fixes it → clean scan
+- Agent produces vulnerable code → Gate 3 catches it → agent fixes it → clean scan
 - Security finding appears in OpenObserve with CWE classification
-- Fix diff is minimal (agent didn't rewrite everything, just fixed the vuln)
+- Fix diff is minimal (agent uses parameterized queries, not a rewrite)
+- After max retries, issue correctly moves to "blocked"
 
 ### Command
 ```bash
-just tb3                    # run with seeded vuln issue
-just tb3 --vuln sqlinjection  # specific vulnerability type
+just tb3 <issue_id> <repo_path>          # seeded mode (deterministic)
+just tb3-organic <issue_id> <repo_path>  # organic mode (relies on agent)
 ```
+
+### Status: CODE COMPLETE (2026-03-12)
+- Gate 3 (security SAST) implemented with bandit integration
+- `run_tb3()` pipeline with vulnerable code seeding + retry + CWE tracking
+- `TB3Result` with security findings, CWE IDs, vulnerability_fixed flag
+- Pre-seeded fixture: `test-fixtures/code/vulnerable_search.py` (CWE-89 x2)
+- bandit confirms detection: B608 CWE-89 on both SQL injection points
+- 23 unit tests (121 total)
+- Awaiting e2e run
 
 ---
 

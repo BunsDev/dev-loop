@@ -1,8 +1,8 @@
 # dev-loop Handoff — 2026-03-12
 
-## Status: TB-2 PASSING
+## Status: TB-3 CODE COMPLETE
 
-TB-1 and TB-2 are both fully operational.
+TB-1 and TB-2 are passing. TB-3 is code complete, awaiting e2e run.
 
 ### TB-1 (Golden Path) — PASSING
 - Bug fix: 94s, all gates passed first try
@@ -13,86 +13,126 @@ TB-1 and TB-2 are both fully operational.
 - **Organic mode**: 134s — pre-seeded test trap caught missing edge case → retry → pass
 - **Escalation path**: 41s — max_retries=0 + forced fail → issue status verified as "blocked"
 
+### TB-3 (Security-Gate-to-Fix) — CODE COMPLETE
+- Gate 3 (bandit SAST) added between Gate 2 (secrets) and Gate 4 (review)
+- `run_tb3()` pipeline with vulnerable code seeding + retry + CWE tracking
+- bandit detects CWE-89 (SQL injection) in pre-seeded fixture
+- 23 new unit tests (121 total)
+- Awaiting first e2e run
+
 ## What Was Done This Session
 
-### 1. Updated docs/tracer-bullets.md
-Replaced all dmux and DeepEval references with actual TB-1 implementation (Claude Code CLI, `git worktree add`). Added TB-1 and TB-2 passing status sections.
+### 1. Implemented Gate 3: Security SAST Scan
+Added `run_gate_3_security()` to `src/devloop/gates/server.py`:
+- Uses bandit for Python SAST scanning
+- Parses JSON output into `Finding` objects with CWE classification
+- Maps bandit severity (HIGH/MEDIUM) to critical findings
+- Relative file paths in findings for cleaner output
+- CWE IDs as OTel span attributes for observability
+- Gracefully skips if bandit not installed or project is non-Python
 
-### 2. Implemented TB-2: Failure-to-Retry
-Full vertical slice through all 6 layers:
+### 2. Updated run_all_gates() sequence
+Gate order is now: 0 (sanity) → 2 (secrets) → 3 (security) → 4 (review).
+Gate 3 is fail-fast like others. Skipped gates don't block the suite.
 
-- **Types** (`feedback/types.py`): Added `TB2Result` with trace_id, attempt_span_ids, blocked_verified, force_gate_fail_used, retry_history fields. Added `RetryAttempt` model.
-- **Pipeline** (`feedback/pipeline.py`): Added `run_tb2()` with:
-  - Pre-seeded test fixture injection (Phase 3.5)
-  - Force-gate-fail mode for deterministic retry testing
-  - OTel span linking between retry attempts (`opentelemetry.trace.Link`)
-  - Blocked status verification after escalation
-  - OTel force-flush after pipeline completion
-  - Worktree preservation on escalation for post-mortem
-- **Test fixtures**: Updated `test-fixtures/tickets/tb2-failure.yaml` (factorial issue), created `test-fixtures/tests/test_factorial_trap.py` (edge case trap: float input, negative input, exact message matching)
-- **Justfile**: Wired `just tb2` and `just tb2-force` commands
+### 3. Added `cwe` field to Finding model
+`src/devloop/gates/types.py` — Finding now has `cwe: str | None = None`
 
-### 3. Fixed `_verify_blocked_status()` parser
-`br show --format json` returns a JSON array, not object. Added list unwrapping.
+### 4. Added TB-3 types
+`src/devloop/feedback/types.py`:
+- `SecurityFinding` — CWE, severity, file, line, rule, fixed flag
+- `TB3Result` — extends base with security_findings, vulnerability_fixed, cwe_ids, vuln_seeded
 
-### 4. Added pytest testpaths config
-`test-fixtures/tests/` was being collected by pytest. Added `[tool.pytest.ini_options] testpaths = ["tests"]` to pyproject.toml.
+### 5. Implemented run_tb3() pipeline
+`src/devloop/feedback/pipeline.py`:
+- 12-phase structure matching TB-1/TB-2 pattern
+- Phase 3.5: `_seed_vulnerable_code()` — copies CWE-89 fixture into worktree
+- Seeded mode (default): deterministic via pre-seeded vulnerable file
+- Organic mode: relies on agent following ticket instructions
+- `_make_forced_security_failure()` — synthetic Gate 3 failure for testing
+- `_extract_security_findings()` — extracts CWE/severity from gate results
+- OTel span linking, retry history, escalation support
+- Security-fix persona (retry_max=3, model=opus)
 
-### 5. Unit tests (13 new, 98 total)
-- `test_tb2_helpers.py` — forced failure, fixture seeding, blocked verification, TB2Result model
+### 6. Created vulnerable code fixture
+`test-fixtures/code/vulnerable_search.py`:
+- Two SQL injection vulnerabilities (CWE-89)
+- bandit flags both as B608 at lines 24 and 43
+- Simulates "user search endpoint with raw SQL" ticket
 
-### 6. Created 5 beads for TB-2 (all closed)
-- dl-jd4.6 through dl-jd4.10 under TB-2 epic
+### 7. Added bandit dependency
+`pyproject.toml`: Added `bandit>=1.7` to main dependencies
 
-## Architecture (Current)
+### 8. Unit tests (23 new, 121 total)
+`tests/test_tb3_helpers.py`:
+- `TestSeedVulnerableCode` (3 tests)
+- `TestMakeForcedSecurityFailure` (4 tests)
+- `TestExtractSecurityFindings` (5 tests)
+- `TestGate3Security` (6 tests — mocked bandit, skip behaviors)
+- `TestTB3Result` (3 tests)
+- `TestSecurityFinding` (2 tests)
+
+### 9. Wired justfile
+- `just tb3 <issue_id> <repo_path>` — seeded mode
+- `just tb3-organic <issue_id> <repo_path>` — organic mode
+
+## Architecture (TB-3 additions)
 
 ```
-just tb2 <issue_id> <repo_path>
-    → run_tb2() in feedback/pipeline.py
+just tb3 <issue_id> <repo_path>
+    → run_tb3() in feedback/pipeline.py
         → Phase 1:   poll_ready() — br ready --json
         → Phase 2:   claim_issue() — br update --claim
         → Phase 3:   setup_worktree() — git worktree add
-        → Phase 3.5: seed_test_fixture() — copy trap test into worktree
-        → Phase 4:   select_persona() + build_claude_md_overlay()
+        → Phase 3.5: seed_vulnerable_code() — copy CWE-89 fixture into worktree
+        → Phase 4:   select_persona() — security-fix persona (retry_max=3)
         → Phase 5:   init_tracing() — OTel → OpenObserve
         → Phase 6:   start_heartbeat() — background thread
         → Phase 7:   spawn_agent() — claude --print via stdin
-        → Phase 8:   run_all_gates() or _make_forced_failure()
-        → Phase 9:   gates pass → success (note: retry path not exercised)
-        → Phase 10:  gates fail → retry with span links (Link to previous)
-        → Phase 11:  retries exhausted → escalate + verify_blocked_status()
+        → Phase 8:   run_all_gates() — 0 → 2 → 3 → 4 (Gate 3 catches vuln)
+        → Phase 9:   gates pass → success (agent fixed vuln on first try)
+        → Phase 10:  gates fail → retry with security finding + CWE in prompt
+        → Phase 11:  retries exhausted → escalate to human
         → Phase 12:  cleanup — stop heartbeat, preserve worktree on escalation
         → Flush:     provider.force_flush() for trace verification
 ```
 
-## File Map (TB-2 additions)
+## File Map (TB-3 additions)
 ```
+src/devloop/gates/
+├── server.py            # Gate 0 + Gate 2 + Gate 3 (NEW) + Gate 4 + run_all_gates
+└── types.py             # Finding (now with cwe field)
+
 src/devloop/feedback/
-├── pipeline.py          # run_tb1() + run_tb2() + TB-2 helpers
-├── types.py             # TB1Result, TB2Result, RetryAttempt
+├── pipeline.py          # run_tb1() + run_tb2() + run_tb3() (NEW) + TB-3 helpers
+├── types.py             # + SecurityFinding, TB3Result (NEW)
 └── server.py            # retry_agent(), escalate_to_human() (unchanged)
 
 test-fixtures/
-├── tickets/tb2-failure.yaml     # Factorial issue with edge cases
-└── tests/test_factorial_trap.py # Pre-seeded test trap (float, negative, message match)
+├── code/vulnerable_search.py   # Pre-seeded SQL injection (CWE-89 x2)
+├── tickets/tb3-vulnerability.yaml  # "Add user search with raw SQL" ticket
+└── tests/test_factorial_trap.py    # TB-2 test trap (unchanged)
 
 tests/
-└── test_tb2_helpers.py  # 13 tests for TB-2 helpers
+├── test_tb2_helpers.py  # 13 tests for TB-2
+└── test_tb3_helpers.py  # 23 tests for TB-3 (NEW)
 ```
 
-## What's Next: TB-3
+## What's Next: TB-3 E2E Run
 
-TB-2 is passing. Per docs/tracer-bullets.md, TB-3 is **Security-Gate-to-Fix**:
-- Seed issue that produces code with a known vulnerability
-- VibeForge Scanner catches it (or equivalent security scanner)
-- Agent self-remediates based on structured finding
-- Security finding appears in OpenObserve with CWE classification
+To run TB-3 end-to-end:
+1. Create a beads issue: `br create --title "Add user search endpoint" --labels security --parent dl-ajr`
+2. Run: `just tb3 <issue_id> ~/prompt-bench`
+3. Verify: Gate 3 catches CWE-89 → retry → agent fixes → clean scan
+4. Check OpenObserve for security spans with CWE attributes
 
-Other TBs in order: TB-4 (cost control), TB-5 (cross-repo), TB-6 (session replay).
+After TB-3 passes: TB-4 (cost control), TB-5 (cross-repo), TB-6 (session replay).
 
 ## Key Gotchas
 - `br show --format json` returns a JSON array (list), not a dict
 - `br create` uses `--labels` (plural), not `--label`; no `--epic` flag, use `--parent`
-- Pre-seeded test trap is the key to organic TB-2 failures — the `float(5.0)` TypeError check is what agents miss most often
-- `provider.force_flush()` needed after pipeline to ensure spans export before verification
-- Worktree preserved on escalation (`keep_worktree_on_failure` logic)
+- Gate 3 skips gracefully if bandit not installed or project is non-Python
+- bandit exit code 1 = issues found (not an error), exit code 2 = actual error
+- Pre-seeded vulnerable code goes into first `src/<pkg>/` directory with `__init__.py`
+- Gate 3 scans `src/` if it exists, otherwise the whole worktree
+- `provider.force_flush()` needed after pipeline to ensure spans export
