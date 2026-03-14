@@ -202,27 +202,30 @@ just tb5 dl-abc ~/prompt-bench ~/omniswipe-backend
 
 | Layer | What happens | Minimal implementation |
 |-------|-------------|----------------------|
-| Intake | Any issue (reuse TB-2's failure case) | Existing issue |
+| Intake | Any issue (reuse TB-2's failure case) | Poll + claim via beads |
 | Orchestration | Normal flow | `git worktree add` + persona |
-| Runtime | Agent session fully captured | AgentLens recording every tool call, context state, decision |
-| Quality Gates | Gate failure triggers session save | On failure, session marked for review |
-| Observability | Session browsable in AgentLens, linked to OTel trace | AgentLens UI shows timeline, tool calls, context window |
-| Feedback Loop | Human reviews session → adjusts CLAUDE.md or harness config | Manual step: review → config change → re-run confirms fix |
+| Runtime | Agent NDJSON stdout saved as session file | `_save_session()` writes to `/tmp/dev-loop/sessions/` |
+| Quality Gates | Gate failure triggers session analysis | `_parse_session_events()` + `_suggest_claude_md_fix()` |
+| Observability | Session timeline linked to OTel trace via trace_id | Session metadata includes trace_id; `just tb6-replay` shows timeline |
+| Feedback Loop | Rule-based CLAUDE.md fix suggestion from gate failure | Gate name → fix template (sanity→tests, secrets→env vars, etc.) |
 
 ### Entry Criteria
 - TB-2 passes (we have a failure to debug)
-- AgentLens capturing sessions
 
 ### Exit Criteria
-- Failed session is fully replayable in AgentLens
-- Can identify exactly which tool call / decision led to failure
-- CLAUDE.md change based on session analysis prevents the same failure on re-run
+- Agent session saved to disk as NDJSON + metadata
+- Session replayable via `just tb6-replay <session_id>`
+- Timeline shows all NDJSON events with types
+- Gate failure produces a suggested CLAUDE.md fix
+- Session linked to OTel trace via trace_id in metadata
 
 ### Command
 ```bash
-just tb6                    # re-run TB-2 failure with full capture
-just tb6 --session <id>     # replay a specific session
+just tb6 <issue_id> <repo_path>    # run with session capture + forced gate fail
+just tb6-replay <session_id>       # replay a saved session
 ```
+
+### Status: CODE COMPLETE
 
 ---
 

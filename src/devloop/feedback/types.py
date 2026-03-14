@@ -245,6 +245,67 @@ class TB5Result(BaseModel):
     )
 
 
+class SessionEvent(BaseModel):
+    """A single event parsed from the agent's NDJSON output."""
+
+    line_number: int = Field(description="1-indexed line number in the NDJSON output.")
+    type: str = Field(description="Event type (result, assistant, tool_use, etc.).")
+    data: dict = Field(default_factory=dict, description="Full parsed JSON object.")
+
+
+class TB6Result(BaseModel):
+    """Result of a full TB-6 pipeline run (Session Replay Debug)."""
+
+    issue_id: str
+    repo_path: str
+    success: bool
+    phase: str = Field(description="Last phase completed (or failed at).")
+    error: str | None = None
+    duration_seconds: float = 0.0
+    worktree_path: str | None = None
+    persona: str | None = None
+    retries_used: int = 0
+    max_retries: int = 0
+    escalated: bool = False
+    # TB-6 specific fields
+    trace_id: str | None = Field(
+        default=None,
+        description="Root OTel trace ID.",
+    )
+    attempt_span_ids: list[str] = Field(
+        default_factory=list,
+        description="Span IDs per attempt for linked trace verification.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Session ID for the captured agent run.",
+    )
+    session_path: str | None = Field(
+        default=None,
+        description="Filesystem path to the saved session NDJSON file.",
+    )
+    session_event_count: int = Field(
+        default=0,
+        description="Total number of NDJSON events in the session.",
+    )
+    session_event_types: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of events by type (e.g. {'tool_use': 3, 'result': 1}).",
+    )
+    gate_failure: str | None = Field(
+        default=None,
+        description="Name of the first gate that failed (if any).",
+    )
+    suggested_fix: str | None = Field(
+        default=None,
+        description="Suggested CLAUDE.md rule based on gate failure analysis.",
+    )
+    force_gate_fail_used: bool = Field(
+        default=False,
+        description="Whether forced gate failure mode was active.",
+    )
+
+
 class TB2Result(BaseModel):
     """Result of a full TB-2 pipeline run."""
 

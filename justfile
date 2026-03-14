@@ -110,10 +110,18 @@ tb5 SOURCE_ISSUE SOURCE_REPO TARGET_REPO:
     uv run python -c "from devloop.feedback.pipeline import run_tb5; import json; print(json.dumps(run_tb5('{{SOURCE_ISSUE}}', '{{SOURCE_REPO}}', '{{TARGET_REPO}}'), indent=2))"
 
 # TB-6: Session replay (observability path)
-tb6 *ARGS:
+# Usage: just tb6 <issue_id> <repo_path>
+# Example: just tb6 dl-abc ~/prompt-bench
+tb6 ISSUE_ID REPO_PATH:
     @echo "Running TB-6: Session Replay Debug"
-    @echo "Requires: TB-2 passing"
-    @echo "Args: {{ARGS}}"
+    @echo "Issue: {{ISSUE_ID}} | Repo: {{REPO_PATH}}"
+    uv run python -c "from devloop.feedback.pipeline import run_tb6; import json; print(json.dumps(run_tb6('{{ISSUE_ID}}', '{{REPO_PATH}}'), indent=2))"
+
+# TB-6 replay: display a saved session
+# Usage: just tb6-replay <session_id>
+tb6-replay SESSION_ID:
+    @echo "Replaying session: {{SESSION_ID}}"
+    uv run python -c "from devloop.feedback.pipeline import replay_session; r = replay_session('{{SESSION_ID}}'); print(r['timeline'])"
 
 # Run all passing tracer bullets
 tb-all:

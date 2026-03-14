@@ -2,7 +2,7 @@
 
 ## Status: TB-5 CODE COMPLETE
 
-TB-1 through TB-5 all implemented. 207 unit tests passing.
+TB-1 through TB-6 all implemented. 237 unit tests passing.
 
 ### TB-1 (Golden Path) — PASSING
 - Bug fix: 94s, all gates passed first try
@@ -98,11 +98,47 @@ just tb5 <source_issue_id> <source_repo_path> <target_repo_path>
         → Phase 8:   cleanup — flush OTel
 ```
 
-## What's Next: TB-6 (Session Replay)
+### TB-6 (Session Replay Debug) — CODE COMPLETE
+- Agent NDJSON stdout saved to `/tmp/dev-loop/sessions/<session_id>.ndjson`
+- Session metadata (issue_id, trace_id, exit_code, gate_failure, suggested_fix) in `.meta.json`
+- `_parse_session_events()` parses ALL NDJSON lines (not just `type: result`)
+- `_format_session_timeline()` renders human-readable timeline with event types
+- `_suggest_claude_md_fix()` — rule-based: gate name → CLAUDE.md suggestion
+- `just tb6 <issue_id> <repo_path>` / `just tb6-replay <session_id>`
+- TB-6 is TB-2 pattern + 3 new phases: save_session, parse_session, suggest_fix
 
-TB-6 proves session replay + debugging. Requires TB-2 passing.
+#### TB-6 Files Changed
 
-After TB-6: scoring rubric evaluation.
+| File | What Changed |
+|------|-------------|
+| `feedback/types.py` | `SessionEvent`, `TB6Result` (session_id, session_path, event_count, event_types, gate_failure, suggested_fix) |
+| `feedback/pipeline.py` | 6 helpers (`_generate_session_id`, `_parse_session_events`, `_save_session`, `_load_session`, `_format_session_timeline`, `_suggest_claude_md_fix`) + `run_tb6()` + `replay_session()` |
+| `justfile` | `tb6` (2 args) + `tb6-replay` (1 arg) commands |
+| `tests/test_tb6.py` | 30 tests: types, NDJSON parsing, save/load, timeline format, fix suggestions, session ID |
+| `docs/tracer-bullets.md` | TB-6 section updated with actual design |
+
+## Architecture (TB-6 flow)
+
+```
+just tb6 <issue_id> <repo_path>
+    → run_tb6() in feedback/pipeline.py
+        → Phase 1:   poll + claim (intake)
+        → Phase 2:   setup_worktree (orchestration)
+        → Phase 3:   select_persona (orchestration)
+        → Phase 4:   init_tracing (observability)
+        → Phase 5:   start_heartbeat (observability)
+        → Phase 6:   spawn_agent → capture NDJSON stdout (runtime)
+        → Phase 7:   _save_session() → .ndjson + .meta.json (observability)
+        → Phase 8:   run gates (or forced failure)
+        → Phase 9:   _parse_session_events() → structured timeline (observability)
+        → Phase 10:  retry loop (feedback)
+        → Phase 11:  _suggest_claude_md_fix() → rule-based fix (feedback)
+        → Phase 12:  cleanup — heartbeat, worktree, OTel flush
+```
+
+## What's Next
+
+All 6 tracer bullets implemented. Next: scoring rubric evaluation.
 
 ## Key Gotchas
 - `br show --format json` returns a JSON array (list), not a dict
@@ -123,3 +159,7 @@ After TB-6: scoring rubric evaluation.
 - TB-5 cascade skip is a success (`cascade_skipped=True`), not an error — no issue created, just a comment on source
 - TB-5 `_report_cascade_outcome()` must use `--message` flag with `br comments add` (bug fix: was passing message as positional arg)
 - TB-5 `_get_source_issue_details()` must handle `br show --format json` returning a list (bug fix: was assuming dict)
+- TB-6 session files go to `/tmp/dev-loop/sessions/` — survives reboots on most Linux, but not guaranteed. Move to persistent storage for production.
+- TB-6 `_parse_session_events()` skips non-JSON lines (agent may emit plain text alongside NDJSON)
+- TB-6 `_suggest_claude_md_fix()` is rule-based, not LLM-based — maps gate name to fix template. Fast + deterministic but limited.
+- TB-6 session metadata is re-written after gate analysis (Phase 11) to include gate_failure + suggested_fix
