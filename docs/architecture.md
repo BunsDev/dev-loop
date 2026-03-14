@@ -13,32 +13,33 @@ dev-loop is a closed-loop developer tooling harness. The output of every stage f
                                │ poll (br ready)
                     ┌──────────▼──────────┐
                     │   ORCHESTRATION      │
-                    │  dmux (worktrees)    │
+                    │  git worktree        │
+                    │  (isolation)         │
                     │  task decomposition  │
                     │  agent assignment    │
                     └──────────┬──────────┘
                                │ spawn
                     ┌──────────▼──────────┐
                     │   AGENT RUNTIME      │
-                    │  OpenFang sandbox    │
-                    │  memory/context      │
+                    │  CLAUDE.md scoping   │
+                    │  persona overlay     │
                     │  tool access (MCP)   │
-                    │  token metering      │
+                    │  NDJSON usage parsing│
                     └──────────┬──────────┘
                                │ output (diff, PR, artifact)
                     ┌──────────▼──────────┐
                     │   QUALITY GATES      │
-                    │  DeepEval (review)   │
-                    │  VibeForge (security)│
+                    │  Claude CLI (review) │
+                    │  bandit (SAST)       │
                     │  gitleaks (secrets)  │
-                    │  ATDD (acceptance)   │
                     └──────────┬──────────┘
                                │ pass/fail + traces
                     ┌──────────▼──────────┐
                     │   OBSERVABILITY      │
                     │  OTel spans          │
                     │  OpenObserve (store) │
-                    │  AgentLens (replay)  │
+                    │  NDJSON session      │
+                    │  replay (TB-6)       │
                     │  DORA dashboards     │
                     └──────────┬──────────┘
                                │ signals
@@ -62,7 +63,7 @@ Every layer communicates through one of three mechanisms:
 
 1. **MCP servers** — Tool calls between layers. Each MCP server is a thin wrapper around one tool or service.
 2. **OpenTelemetry spans** — Every layer emits spans. Spans carry context (project_id, agent_id, task_id, tracer_bullet_id) that ties the full loop together.
-3. **Git** — The universal state store. Worktrees for isolation. Branches for agent work. Commits as checkpoints. Context repos for memory.
+3. **Git** — The universal state store. Worktrees for isolation. Branches for agent work. Commits as checkpoints.
 
 ```
 Layer 1 ──MCP──► Layer 2 ──MCP──► Layer 3
@@ -90,7 +91,7 @@ project-b/
 ```
 
 Each project gets:
-- Its own worktree per agent run (via dmux)
+- Its own worktree per agent run (via `git worktree add`)
 - Its own beads labels and issue prefix
 - Its own quality gate thresholds (some repos need stricter security)
 - Shared observability (all traces go to the same OpenObserve instance)
@@ -104,28 +105,26 @@ Each project gets:
 3. Intake creates OTel span: trace_id=T, span=intake
 4. Orchestration layer:
    a. Reads issue metadata (repo, description, labels)
-   b. Runs dmux to create isolated worktree + branch
+   b. Runs git worktree add to create isolated worktree + branch
    c. Selects agent config based on labels (bug fix, feature, refactor)
    d. Creates OTel span: trace_id=T, span=orchestration
 5. Agent runtime:
-   a. OpenFang sandbox initialized with scoped capabilities (TB-3+, CLAUDE.md scoping for TB-1)
-   b. Agent loads context from Letta/Continuous-Claude context repo
-   c. Agent works in worktree (reads code, makes changes)
-   d. Token proxy logs every LLM call with project_id, task_id
-   e. Creates OTel span: trace_id=T, span=agent_runtime
+   a. Worktree with CLAUDE.md scoping (persona overlay + deny list)
+   b. Agent works in worktree (reads code, makes changes)
+   c. Usage parsed from --output-format json NDJSON
+   d. Creates OTel span: trace_id=T, span=agent_runtime
 6. Quality gates (sequential, fail-fast):
    a. Gate 0: Sanity — compile + test
-   b. Gate 0.5: Relevance — LLM-as-judge checks diff vs issue
-   c. Gate 1: ATDD — run acceptance tests if spec exists
-   d. Gate 2: Secrets — gitleaks on the diff
-   e. Gate 2.5: Dangerous ops — migration/CI/auth detection
-   f. Gate 3: Security — VibeForge Scanner + npm/pip audit
-   g. Gate 4: Review — DeepEval LLM-as-judge code review
-   h. Gate 5: Cost — budget check
-   i. Each gate creates OTel span with pass/fail
+   b. Gate 0.5: Relevance — keyword overlap checks diff vs issue
+   c. Gate 2: Secrets — gitleaks on the diff
+   d. Gate 2.5: Dangerous ops — migration/CI/auth detection
+   e. Gate 3: Security — bandit SAST (Python projects only)
+   f. Gate 4: Review — Claude CLI LLM-as-judge code review
+   g. Gate 5: Cost — turn/token usage check (called separately, not in fail-fast chain)
+   h. Each gate creates OTel span with pass/fail
 7. Observability:
    a. All spans arrive in OpenObserve
-   b. AgentLens captures full agent session for replay
+   b. NDJSON session saved for replay (TB-6)
    c. DORA metrics updated (lead time clock started at step 1)
 8. Outcome routing:
    a. ALL GATES PASS → PR created, beads issue → closed
@@ -141,7 +140,7 @@ Each project gets:
 ## Key Constraints
 
 - **No shared mutable state between agents.** Worktree isolation is mandatory.
-- **Every tool is bypassable.** `just tb1 --skip-security` skips VibeForge. `just tb1 --skip-review` skips DeepEval review. The loop still runs.
-- **Cost ceiling per run.** Token proxy enforces a hard limit. Agent is killed if it exceeds budget. Configurable per project.
+- **Every tool is bypassable.** `just tb1 --skip-security` skips bandit. `just tb1 --skip-review` skips Claude CLI review. The loop still runs.
+- **Cost tracking per run.** Usage parsed from NDJSON output (turns, tokens). On Max subscription, dollar cost is $0 but turns/tokens are still bounded. Configurable per project.
 - **Human-in-the-loop by default.** PRs require human merge. Auto-merge is opt-in per project after trust is established.
 - **100% open source.** Every tool in the stack is open source or built in-house. The only external dependency is the Anthropic API.

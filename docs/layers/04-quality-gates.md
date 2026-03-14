@@ -1,17 +1,12 @@
 # Layer 4: Quality Gates
 
 ## Purpose
-Every agent output passes through a gauntlet of automated checks before it becomes a PR. Gates run sequentially — fail fast, fail cheap. Each gate produces structured output that the feedback loop can parse and act on.
+Every agent output passes through a gauntlet of automated checks before it becomes a PR. Gates run sequentially -- fail fast, fail cheap. Each gate produces structured output that the feedback loop can parse and act on.
 
 **All gates are open source or built in-house. Zero paid tools.**
 
-### TB-1 Minimal
-TB-1 wires only 2-3 gates, not all 8:
-- **Gate 0 (Sanity)** — compile + test (free, fast)
-- **Gate 2 (Secrets)** — gitleaks scan (critical, must run before code leaves machine)
-- **Gate 4 (Review)** — DeepEval LLM-as-judge (validates the concept)
-
-Gates 0.5, 1, 2.5, 3, and 5 are wired progressively in TB-2 through TB-4. The full 8-gate pipeline described below is the target state, not the TB-1 state.
+### TB-1 Coverage
+TB-1 wires Gate 0 (sanity), Gate 0.5 (relevance), Gate 2 (secrets), Gate 2.5 (dangerous ops), Gate 3 (security/bandit), and Gate 4 (review). Gate 5 (cost/usage) is implemented but called separately, not in the fail-fast chain.
 
 ## In-Process Backpressure (Pre-Gate)
 
@@ -48,11 +43,6 @@ Agent Output (diff + commits)
          │ pass
          ▼
 ┌─────────────────┐
-│ Gate 1: ATDD     │ ← Do acceptance tests pass (if spec exists)?
-└────────┬────────┘
-         │ pass
-         ▼
-┌─────────────────┐
 │ Gate 2: Secrets  │ ← Any leaked credentials in the diff?
 └────────┬────────┘
          │ pass
@@ -63,32 +53,29 @@ Agent Output (diff + commits)
          │ pass
          ▼
 ┌─────────────────┐
-│ Gate 3: Security │ ← SAST/SCA scan (VibeForge + npm/pip audit)
+│ Gate 3: Security │ ← SAST scan (bandit for Python)
 └────────┬────────┘
          │ pass
          ▼
 ┌─────────────────┐
-│ Gate 4: Review   │ ← LLM-as-judge code review (DeepEval)
-└────────┬────────┘
-         │ pass
-         ▼
-┌─────────────────┐
-│ Gate 5: Cost     │ ← Did the agent stay within budget?
+│ Gate 4: Review   │ ← LLM-as-judge code review (Claude CLI)
 └────────┬────────┘
          │ pass
          ▼
        PR Created
+
+Gate 5 (Cost/Usage) is called separately after PR creation.
+Gate 1 (ATDD) is not yet implemented.
 ```
 
 **Why this order:**
-- Gate 0 is free and fast — catches garbage before spending money on scans
-- Gate 0.5 is cheap (one LLM call) — catches off-topic work early
-- Gate 1 (ATDD) catches behavioral regressions early
-- Gate 2 (secrets) is critical — must run before any code leaves the machine
+- Gate 0 is free and fast -- catches garbage before spending money on scans
+- Gate 0.5 is cheap (keyword overlap) -- catches off-topic work early
+- Gate 2 (secrets) is critical -- must run before any code leaves the machine
 - Gate 2.5 (dangerous ops) catches migrations, destructive commands
 - Gate 3 (security) catches vulns before human reviewers see the PR
-- Gate 4 (review) is the most expensive gate — runs last on clean code
-- Gate 5 (cost) is a bookkeeping check, not a code check
+- Gate 4 (review) is the most expensive gate -- runs last on clean code
+- Gate 5 (cost) is a bookkeeping check, not a code check -- called separately
 
 ## Gate Details
 
@@ -107,48 +94,17 @@ cargo check            # Rust
 - **Fail**: structured error with file:line:message
 
 ### Gate 0.5: Task Relevance Check
-Tool: **DeepEval** LLM-as-judge (via Claude API — already paid for)
+Tool: Keyword overlap analysis between issue description and diff content.
 
-LLM-as-judge compares the diff against the issue description. Scores how well the change addresses the stated requirements. Catches agents that did good work on the wrong thing.
+Compares words in the issue title/description against words in the diff. Scores how well the change relates to the stated requirements. Catches agents that did good work on the wrong thing.
 
 ### Gate 1: ATDD (Acceptance Test Driven Development)
-Tool: `swingerman/atdd` Claude Code plugin (open source)
-
-- Reads Given/When/Then specs from `specs/` directory
-- Generates and runs acceptance tests against the agent's changes
-- Two test streams: acceptance tests (behavioral) + unit tests (structural)
-- **Only runs if spec exists** — no spec = gate skipped with warning
-
-Output format:
-```json
-{
-  "gate": "atdd",
-  "status": "fail",
-  "specs_run": 3,
-  "specs_passed": 2,
-  "specs_failed": 1,
-  "failures": [
-    {
-      "spec": "specs/user-auth.feature",
-      "scenario": "Given expired token When refresh Then new token issued",
-      "error": "Expected 200, got 401",
-      "file": "src/auth/refresh.ts",
-      "line": 42
-    }
-  ]
-}
-```
+**Not yet implemented.** Planned: reads Given/When/Then specs from `specs/` directory, generates and runs acceptance tests against the agent's changes. Only runs if spec exists.
 
 ### Gate 2: Secret Scanner
-Tool: `gitleaks` (open source) + custom entropy detection
+Tool: `gitleaks` (open source)
 
-```
-src/devloop/gates/
-├── secrets.py         # Run gitleaks on diff + custom entropy check
-└── allowlist.yaml     # Known false positives (test fixtures, etc.)
-```
-
-Patterns scanned:
+Scans the diff for leaked credentials:
 - API keys (AWS, GCP, Azure, Anthropic, OpenAI, etc.)
 - Private keys (RSA, EC, Ed25519)
 - Passwords in config files
@@ -168,23 +124,23 @@ Scans the diff for operations that require human approval regardless of quality:
 If detected: gate pauses and escalates to human. Never auto-passes.
 
 ### Gate 3: Security Scan
-Tools: **VibeForge Scanner** (2000+ rules, open source) + `npm audit` + `pip-audit` + **Claude Code Security** (when available)
+Tool: **bandit** (Python SAST, open source)
 
-Coverage:
-- **SAST** — Static analysis for code vulnerabilities (SQL injection, XSS, path traversal, etc.)
-- **SCA** — Dependency vulnerability scanning (`npm audit`, `pip-audit`)
-- **Container** — Base image scanning (if Dockerfile in diff)
+Runs `bandit -r` on Python files in the diff. Reports findings with CWE classification, severity, file:line, and suggested fix.
 
-Output: structured findings with CWE classification, severity, file:line, and suggested fix.
+Note: bandit is Python-only. Non-Python projects skip this gate gracefully (gate passes with a "skipped: no Python files" message). SCA scanning (`npm audit`, `pip-audit`) is detected by project type but not yet wired into the gate.
 
 ### Gate 4: Code Review (LLM-as-Judge)
-Tool: **DeepEval** (open source Python framework) via Claude API
+Tool: **Claude CLI** with `--print` and structured JSON schema output
 
-Replaces CodeRabbit. Uses Claude API (already paid for) as LLM-as-judge with DeepEval metrics:
-- Hallucination detection
-- Code relevancy scoring
-- Step efficiency analysis
-- Custom criteria: race conditions, memory leaks, missing error handling
+Uses `claude --print --output-format json` with a review prompt and JSON schema for structured output. Evaluates the code change against review criteria from `config/review-gate.yaml`:
+- Race conditions
+- Memory leaks
+- Logic errors
+- Missing error handling at boundaries
+- Performance antipatterns
+
+Critical findings fail the gate. Warnings and suggestions are included in the output but do not block.
 
 Configuration:
 ```yaml
@@ -203,45 +159,31 @@ review:
     suggestion: pass  # attached to PR as suggestions
 ```
 
-### Gate 5: Cost Check
-Tool: Token proxy data (OTel metrics)
+### Gate 5: Usage Check
+Tool: Parsed NDJSON usage data (turns, tokens)
 
-```json
-{
-  "gate": "cost",
-  "status": "pass",
-  "budget_usd": 2.00,
-  "spent_usd": 0.87,
-  "remaining_usd": 1.13,
-  "calls": 12,
-  "tokens_input": 45000,
-  "tokens_output": 8500
-}
-```
+Checks that the agent run stayed within reasonable resource bounds. On Claude Code Max, cost is always $0; this gates on turn count and token usage against configurable thresholds.
+
+Implemented but not in the fail-fast chain -- called separately after the main gate sequence.
 
 ### MCP Server: `quality-gates`
 
 ```
 src/devloop/gates/
 ├── __init__.py
-├── runner.py          # Sequential gate execution with fail-fast
-├── sanity.py          # Gate 0: compile + test
-├── relevance.py       # Gate 0.5: LLM-as-judge task relevance
-├── atdd.py            # Gate 1: acceptance tests
-├── secrets.py         # Gate 2: gitleaks + entropy
-├── dangerous_ops.py   # Gate 2.5: migration/CI/auth detection
-├── security.py        # Gate 3: VibeForge + npm/pip audit
-├── review.py          # Gate 4: DeepEval LLM-as-judge
-├── cost.py            # Gate 5: budget check
-├── reporter.py        # Aggregate gate results into structured report
-└── types.py
+├── server.py          # All gate implementations + MCP server
+└── types.py           # Finding, GateResult, GateSuiteResult
 ```
 
 **Tools exposed:**
-- `run_all_gates` — sequential execution, fail-fast
-- `run_gate` — run a single gate (for debugging)
-- `get_gate_results` — retrieve results for a specific run
-- `skip_gate` — mark a gate as skipped (escape hatch)
+- `run_gate_0_sanity` — compile + test
+- `run_gate_05_relevance` — keyword overlap check between issue and diff
+- `run_gate_2_secrets` — gitleaks scan
+- `run_gate_25_dangerous_ops` — migration/CI/auth detection
+- `run_gate_3_security` — bandit SAST scan
+- `run_gate_4_review` — Claude CLI LLM-as-judge code review
+- `run_gate_5_cost` — turn/token usage check
+- `run_all_gates` — sequential execution, fail-fast (runs gates 0 → 0.5 → 2 → 2.5 → 3 → 4)
 
 ### OTel Instrumentation
 Each gate emits its own span:
@@ -260,11 +202,11 @@ Aggregate span:
 ```
 span: quality_gates.run_all
 attributes:
-  gates.total: 8
-  gates.passed: 7
-  gates.failed: 1
+  gates.total: 6
+  gates.passed: 6
+  gates.failed: 0
   gates.skipped: 0
-  gates.first_failure: security
+  gates.first_failure: null
   gates.total_duration_ms: 12400
 parent: runtime.output
 ```
@@ -279,9 +221,6 @@ quality_gates:
     commands: ["npm test", "npm run lint"]
   relevance:
     enabled: true
-    model: claude-sonnet-4-6
-  atdd:
-    enabled: false  # no specs yet
   secrets:
     enabled: true
     allowlist: ["tests/fixtures/fake-key.pem"]
@@ -295,21 +234,11 @@ quality_gates:
     block_on: critical  # only critical findings block
   cost:
     enabled: true
-    ceiling_usd: 2.00
+    max_turns: 25
+    max_input_tokens: 200000
 ```
 
-### Fallback: semgrep
-If VibeForge Scanner is unmaintained or rule quality is insufficient, **semgrep** (14k+ stars, Semgrep Inc backing, LGPL-2.1) is the drop-in replacement:
-- 3,000+ community rules
-- `semgrep scan --config auto` works out of the box
-- Python + JSON output, trivial to wrap as MCP tool
-- Actively maintained with weekly rule updates
-
-Evaluate VibeForge vs semgrep during TB-3 scoring. Pick the winner by rule quality and false positive rate.
-
 ### Open Questions
-- [ ] VibeForge Scanner vs semgrep — evaluate both during TB-3, pick winner by rule quality and FP rate
 - [ ] Claude Code Security: when does research preview become GA?
-- [ ] Should Gate 4 (review) use DeepEval or a simpler custom LLM-as-judge prompt?
 - [ ] How to handle flaky gates? (gate passes sometimes, fails sometimes on same code)
 - [ ] Should gate results be posted as PR comments or stored separately?

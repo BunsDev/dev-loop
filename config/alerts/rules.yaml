@@ -1,0 +1,86 @@
+# OpenObserve alert rules for dev-loop
+# Import these via the OpenObserve API or web UI
+# See: https://openobserve.ai/docs/user-guide/alerts/
+
+alerts:
+  - name: gate_failure_spike
+    description: "3+ gate failures in 10 minutes — investigate"
+    stream: default
+    condition:
+      sql: >
+        SELECT COUNT(*) as failures
+        FROM default
+        WHERE service_name = 'dev-loop'
+          AND operation_name = 'gates.run_all'
+          AND attributes_string['gates.first_failure'] IS NOT NULL
+          AND _timestamp >= NOW() - INTERVAL '10 MINUTES'
+      threshold: 3
+      operator: ">="
+    frequency_minutes: 5
+    severity: warning
+
+  - name: agent_stuck
+    description: "Agent heartbeat missing for >5 minutes — may be hung"
+    stream: default
+    condition:
+      sql: >
+        SELECT attributes_string['issue.id'] as issue_id,
+               MAX(_timestamp) as last_heartbeat
+        FROM default
+        WHERE service_name = 'dev-loop'
+          AND operation_name = 'runtime.heartbeat'
+          AND _timestamp >= NOW() - INTERVAL '30 MINUTES'
+        GROUP BY issue_id
+        HAVING MAX(_timestamp) < NOW() - INTERVAL '5 MINUTES'
+      threshold: 1
+      operator: ">="
+    frequency_minutes: 2
+    severity: critical
+
+  - name: high_turn_usage
+    description: "Agent used >20 turns in a single run — possible runaway"
+    stream: default
+    condition:
+      sql: >
+        SELECT trace_id,
+               CAST(attributes_int64['runtime.num_turns'] AS INT) as turns
+        FROM default
+        WHERE service_name = 'dev-loop'
+          AND operation_name = 'runtime.spawn_agent'
+          AND CAST(attributes_int64['runtime.num_turns'] AS INT) > 20
+          AND _timestamp >= NOW() - INTERVAL '1 HOUR'
+      threshold: 1
+      operator: ">="
+    frequency_minutes: 10
+    severity: warning
+
+  - name: escalation_spike
+    description: "3+ issues escalated to human in 1 hour — systemic problem"
+    stream: default
+    condition:
+      sql: >
+        SELECT COUNT(*) as escalations
+        FROM default
+        WHERE service_name = 'dev-loop'
+          AND operation_name = 'feedback.escalate'
+          AND _timestamp >= NOW() - INTERVAL '1 HOUR'
+      threshold: 3
+      operator: ">="
+    frequency_minutes: 15
+    severity: critical
+
+  - name: security_finding
+    description: "Security vulnerability detected by Gate 3"
+    stream: default
+    condition:
+      sql: >
+        SELECT COUNT(*) as findings
+        FROM default
+        WHERE service_name = 'dev-loop'
+          AND operation_name = 'gates.gate_3_security'
+          AND attributes_string['gate.status'] = 'fail'
+          AND _timestamp >= NOW() - INTERVAL '1 HOUR'
+      threshold: 1
+      operator: ">="
+    frequency_minutes: 5
+    severity: critical

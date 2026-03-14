@@ -1,7 +1,7 @@
 # Layer 5: Observability
 
 ## Purpose
-See everything. Every issue, every agent run, every tool call, every dollar spent, every gate result — visible in one place. Not just logging — tracing (causal chains), metrics (trends), and replay (debugging).
+See everything. Every issue, every agent run, every tool call, every dollar spent, every gate result -- visible in one place. Not just logging -- tracing (causal chains), metrics (trends), and replay (debugging).
 
 **All tools are open source. Zero paid services.**
 
@@ -9,37 +9,34 @@ See everything. Every issue, every agent run, every tool call, every dollar spen
 
 | Pillar | Tool | What it answers |
 |--------|------|----------------|
-| **Traces** | OpenTelemetry → OpenObserve | "What happened in this run, step by step?" |
-| **Metrics** | OpenTelemetry → OpenObserve | "Are we getting faster? Cheaper? More reliable?" |
+| **Traces** | OpenTelemetry -> OpenObserve | "What happened in this run, step by step?" |
+| **Metrics** | OpenTelemetry -> OpenObserve | "Are we getting faster? Cheaper? More reliable?" |
 | **Logs** | OpenObserve | "What did the agent print/say/error?" |
-| **Replay** | AgentLens | "Show me exactly what the agent saw and did." |
+| **Replay** | NDJSON session replay (TB-6) | "Show me exactly what the agent saw and did." |
 
 ## OpenTelemetry (Instrumentation Standard)
 
-Every layer in dev-loop emits OTel spans. This is non-negotiable — if a layer doesn't emit spans, it's invisible.
+Every layer in dev-loop emits OTel spans. This is non-negotiable -- if a layer doesn't emit spans, it's invisible.
 
 ### Span Hierarchy
 ```
 trace: T-abc123 (one per issue)
 ├── span: intake.issue_pickup
 │   └── attributes: issue.id, issue.repo, issue.labels
-├── span: orchestration.setup
-│   └── attributes: agent.persona, worktree.branch, task.complexity
-├── span: runtime.execution
-│   ├── span: runtime.tool_call (N times)
-│   │   └── attributes: tool.name, tool.duration_ms
-│   ├── span: runtime.llm_call (N times)
-│   │   └── attributes: model, tokens_in, tokens_out, cost_usd
-│   └── attributes: total_tool_calls, total_tokens, total_cost
+├── span: orchestration.setup_worktree
+│   └── attributes: worktree.path, worktree.branch
+├── span: orchestration.select_persona
+│   └── attributes: persona.name, persona.model
+├── span: runtime.spawn_agent
+│   ├── attributes: model, num_turns, input_tokens, output_tokens, duration_seconds
+│   └── (single span — Claude Code internals are opaque)
 ├── span: quality_gates.run_all
 │   ├── span: quality_gates.gate_0_sanity
 │   ├── span: quality_gates.gate_05_relevance
-│   ├── span: quality_gates.gate_1_atdd
 │   ├── span: quality_gates.gate_2_secrets
 │   ├── span: quality_gates.gate_25_dangerous_ops
 │   ├── span: quality_gates.gate_3_security
-│   ├── span: quality_gates.gate_4_review
-│   └── span: quality_gates.gate_5_cost
+│   └── span: quality_gates.gate_4_review
 ├── span: feedback.outcome_routing
 │   └── attributes: outcome (pr_created | retry | blocked)
 └── span: feedback.retry (if applicable)
@@ -83,7 +80,7 @@ docker run -d \
 **Dashboard 1: Loop Health**
 - Issues processed (today/week/month)
 - Success rate (PRs created / issues attempted)
-- Average lead time (issue pickup → PR created)
+- Average lead time (issue pickup -> PR created)
 - Average cost per issue
 - Gate failure breakdown (which gates fail most)
 
@@ -103,9 +100,9 @@ docker run -d \
 
 **Dashboard 4: DORA Metrics**
 - Deployment frequency: PRs merged per week per repo
-- Lead time: issue created → PR merged
+- Lead time: issue created -> PR merged
 - Change failure rate: PRs reverted or causing incidents
-- MTTR: incident detected → resolved
+- MTTR: incident detected -> resolved
 
 **Dashboard 5: Cost Tracking**
 - Total spend (daily/weekly/monthly)
@@ -119,52 +116,43 @@ docker run -d \
 OpenObserve has built-in alert rules. No separate incident management tool needed.
 
 When alerts trigger:
-- 3+ gate failures in 10 minutes → investigate
-- Agent stuck for > 5 minutes with no tool calls → kill
-- Cost ceiling exceeded across all projects → pause all
-- Service health check fails (Anthropic API, OpenObserve) → notify
+- 3+ gate failures in 10 minutes -> investigate
+- Agent stuck for > 5 minutes with no tool calls -> kill
+- Cost ceiling exceeded across all projects -> pause all
+- Service health check fails (Anthropic API, OpenObserve) -> notify
 
-## AgentLens (Session Replay)
+## NDJSON Session Replay (TB-6)
 
-Open source (github.com/RobertTLange/agentlens). Local observability for coding-agent sessions.
+Replaces AgentLens. Agent sessions are captured as NDJSON stdout from `claude --print --output-format json`. TB-6 provides replay:
 
-### What it captures
-- Every tool call the agent made (with arguments and results)
-- Every LLM call (prompt + response)
-- Context window state over time
-- Decision points (where the agent chose path A over path B)
-- File reads and writes
-- Time between actions
+1. Save NDJSON stdout to a session file
+2. Parse events (tool calls, results, assistant messages)
+3. Format as a readable timeline
+4. Suggest CLAUDE.md fixes based on failure patterns
 
-### Integration
-AgentLens runs alongside the agent in the worktree. It hooks into Claude Code's tool execution layer.
+### Usage
+```bash
+# After a failed run, replay the session
+just tb6-replay <session_id>
+```
+
+## MCP Server: `observability`
 
 ```
 src/devloop/observability/
 ├── __init__.py
-├── otel_setup.py      # Initialize OTel SDK, configure exporters
-├── span_factory.py    # Helper to create properly attributed spans
-├── dashboards/        # Dashboard definitions (JSON/YAML)
-├── alerts/            # Alert rule definitions
-└── types.py
+├── heartbeat.py       # Background heartbeat for long-running processes
+├── server.py          # MCP server with trace query + health check tools
+├── tracing.py         # Initialize OTel SDK, configure exporters
+└── types.py           # HealthStatus, TraceInfo, RecentTracesResult
 ```
 
-### Usage
-```bash
-# After a failed run, find the session
-just sessions list --status failed
-# Replay it
-just sessions replay <session-id>
-# Compare two attempts of the same issue
-just sessions diff <session-id-1> <session-id-2>
-```
-
-## Optional: Agent Trace
-Open RFC specification for tracking and attributing AI-generated code contributions. Vendor-neutral trace records at file and line granularity. Evaluate for TB-6.
+**Tools exposed:**
+- `get_trace_url` — build the OpenObserve web UI URL for a given trace ID
+- `query_recent_traces` — query OpenObserve for recent trace spans
+- `health_check` — check if OpenObserve is running and reachable
 
 ### Open Questions
 - [ ] OpenObserve retention policy — how long to keep traces? (30 days default)
-- [ ] AgentLens storage — local files or ship to OpenObserve?
 - [ ] Alert fatigue — what's the right threshold before we tune out notifications?
-- [ ] How to correlate AgentLens sessions with OTel traces? (trace_id as link)
-- [ ] Agent Trace RFC — is it mature enough to adopt?
+- [ ] How to correlate NDJSON sessions with OTel traces? (trace_id as link)

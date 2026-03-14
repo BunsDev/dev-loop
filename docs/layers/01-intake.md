@@ -33,7 +33,7 @@ Visual Kanban board for beads (Next.js + Rust). Real-time file sync, epic tracki
 src/devloop/intake/
 ├── __init__.py
 ├── beads_poller.py    # Poll br ready --json for unblocked issues
-├── ticket_parser.py   # Extract structured data from issue
+├── server.py          # MCP server exposing beads tools
 └── types.py           # beads issue → internal WorkItem type
 ```
 
@@ -60,7 +60,7 @@ This span becomes the root of the full trace for this work item.
 - **TB-2**: Seed issue with bad data, same intake path
 - **TB-3**: Seed issue that will produce a security vuln
 - **TB-4**: Seed issue with intentionally large scope
-- **TB-5**: Listens for merged PR webhooks, creates downstream issues
+- **TB-5**: Detects changed files via git diff, matches against dependency map watches, creates downstream cascade issues
 - **TB-6**: Same intake, full session captured downstream
 
 ### Escape Hatches

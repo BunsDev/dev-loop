@@ -1,89 +1,42 @@
 # Layer 3: Agent Runtime
 
 ## Purpose
-The execution environment for agents. Handles sandboxing, memory/context persistence, tool access control, and token metering. This is where agents actually do work — reading code, making changes, running commands.
+The execution environment for agents. Launches Claude Code in headless mode inside a git worktree, captures the output, and returns the result. Tool access is controlled via `--allowedTools` and CLAUDE.md deny lists.
 
-## Primary Tools
+## Primary Tool: Claude Code CLI
 
-### OpenFang (Agent OS)
-- WASM sandboxes with 16 security layers
-- Capability-based permissions (agent gets tokens for specific operations, not raw credentials)
-- Resource metering (CPU, memory, tokens)
-- Prompt injection detection and taint tracking
-- MIT licensed, 137k lines of Rust
+Claude Code is invoked as a subprocess via `claude --print`. This is the only runtime in use for all tracer bullets.
 
-**TB-1 reality check:** OpenFang is ambitious. For TB-1, we run Claude Code directly in a worktree with a scoped CLAUDE.md. OpenFang integration comes in TB-3/TB-4 when we need real sandboxing and cost control.
+### How Agents Are Spawned
 
-### zsh-tool MCP (Shell Safety)
-- Yield-based execution with circuit breaker
-- Prevents command hangs and infinite loops
-- PTY mode for interactive commands
-- Short-term learning to detect retry loops
-
-### Continuous-Claude-v3 (Context Persistence)
-- Ledgers and handoffs that survive context compaction
-- Multi-agent safe memory
-- Skill activation based on context
-- Already built for Claude Code
-
-### Letta Context Repositories (Git-backed Memory)
-- Agent context stored as local files in a git repo
-- Versioned, diffable, concurrent-safe
-- Progressive disclosure (agent sees what it needs, not everything)
-- Agents can programmatically restructure their own memory
-
-### Headroom (Context Compression)
-- Transparent proxy that compresses LLM context by 47-92%
-- Strips boilerplate from tool outputs, DB queries, file reads
-- Agent sees same information with fewer tokens
-- Directly reduces cost AND fits more code into context window
-
-### EnCompass (Checkpoint/Rewind)
-- Checkpoint Python+LLM programs at any state
-- Rewind to last good state instead of full retry
-- Evaluate for TB-2 as alternative to full re-spawn
-
-### Token Proxy (Cost Metering)
-Custom component — thin OTel-instrumented proxy between agents and LLM APIs.
-
-```
-Agent ──► Headroom (compress) ──► Token Proxy (meter) ──► Anthropic API
-                                       │
-                                       ▼
-                                  OpenObserve
-                                  (token counts, costs, latency)
-```
-
-## How to Spawn Claude Code Programmatically
-
-This is the critical implementation detail for all TBs. The agent runtime needs to launch Claude Code in a worktree, give it a task, and capture the result.
-
-### TB-1: CLI Headless Mode
 ```bash
-# Spawn Claude Code in a worktree with a task prompt
+# The actual command built by the runtime layer:
 claude --print \
-  --cwd /tmp/dev-loop/worktrees/dl-1kz \
-  --allowedTools "Read,Write,Edit,Glob,Grep,Bash" \
-  --message "$(cat task-prompt.txt)"
+  --dangerously-skip-permissions \
+  --output-format json \
+  --model sonnet \
+  --max-turns 15 \
+  --allowedTools Read,Write,Edit,Glob,Grep,Bash
 ```
+
+The task prompt is piped via stdin. The agent runs in the worktree directory (set as cwd on the subprocess).
 
 Key flags:
 - `--print` — non-interactive mode, outputs to stdout
-- `--cwd` — run in the worktree directory
-- `--allowedTools` — restrict tool access (maps to capability scoping)
-- `--dangerously-skip-permissions` — for fully unattended runs (TB-2+)
-- `--output-format stream-json` — NDJSON output for real-time monitoring
+- `--dangerously-skip-permissions` — for fully unattended runs
+- `--output-format json` — NDJSON output; the `{"type":"result"}` line contains `num_turns`, `input_tokens`, `output_tokens`
+- `--model` — from persona config (sonnet, opus, haiku)
+- `--max-turns` — from persona config, enforced by Claude Code
+- `--allowedTools` — restrict tool access (Read, Write, Edit, Glob, Grep, Bash by default)
 
-### Token Metering via Base URL Override
-To route LLM calls through the token proxy:
-```bash
-ANTHROPIC_BASE_URL=http://localhost:8100/v1 claude --print --cwd ...
-```
+Environment: `CLAUDECODE` is unset before spawning to allow `--print` mode from within a Claude Code session (nested invocation fix).
 
-The token proxy at `:8100` logs every request to OpenObserve, then forwards to `api.anthropic.com`. Agent is unaware of the proxy.
+### Usage Tracking
 
-### TB-3+: Agent SDK (Python)
-For deeper integration (kill switch, checkpoint, session capture):
+Usage is parsed from the `--output-format json` NDJSON output after the agent completes. The runtime scans for the `{"type":"result"}` line and extracts `num_turns`, `input_tokens`, and `output_tokens`. On a Max subscription, dollar cost is $0 but turn/token counts are still tracked and bounded by Gate 5.
+
+### Future: Agent SDK (Python)
+For deeper integration (streaming, kill switch, checkpoint):
 ```python
 from claude_agent_sdk import Agent
 
@@ -96,62 +49,11 @@ agent = Agent(
 result = agent.run(task_prompt)
 ```
 
-The Agent SDK gives programmatic control over the agent lifecycle — start, monitor, kill. Evaluate maturity during TB-3.
+The Agent SDK would give programmatic control over the agent lifecycle -- start, monitor, kill. Evaluate maturity when available.
 
-### AgentLens Integration Path
-AgentLens cannot hook into Claude Code's internal tool execution. Realistic integration options:
-1. **Parse NDJSON output** — `--output-format stream-json` emits every tool call as a JSON line. AgentLens ingests this stream.
-2. **Parse session transcript** — Claude Code writes `.claude/` session files. AgentLens reads post-hoc.
-3. **Proxy interception** — Token proxy captures prompt/response pairs for replay.
+## Capability Scoping
 
-Option 1 is simplest for TB-6. Option 3 gives richest data.
-
-## Runtime Phases
-
-```
-Phase 1: Context Load
-  ├── Read CLAUDE.md (project + dev-loop overlay)
-  ├── Load relevant context from memory (Letta/Continuous-Claude)
-  ├── Read issue description + any linked context
-  └── Emit span: runtime.context_load
-
-Phase 2: Execution
-  ├── Agent reads codebase (scoped to relevant files)
-  ├── Agent makes changes (edit, create, delete files)
-  ├── Agent runs tests (if applicable)
-  ├── Agent commits to worktree branch
-  ├── Every tool call goes through zsh-tool MCP (safety)
-  ├── Every LLM call goes through token proxy (metering)
-  └── Emit span: runtime.execution (with tool_call_count, token_count)
-
-Phase 3: Output
-  ├── Agent produces: diff, commit(s), optional PR description
-  ├── Context updates written back to memory
-  ├── Session saved for AgentLens
-  └── Emit span: runtime.output
-```
-
-## MCP Server: `runtime-manager`
-
-```
-src/devloop/runtime/
-├── __init__.py
-├── sandbox.py         # OpenFang integration (future), basic isolation (now)
-├── memory.py          # Letta/Continuous-Claude context loading
-├── token_proxy.py     # LLM API proxy with metering
-├── circuit_breaker.py # Kill agent on budget exceeded or hung state
-└── types.py
-```
-
-**Tools exposed:**
-- `load_context` — retrieve relevant memory for this task
-- `save_context` — persist learnings back to context repo
-- `get_token_usage` — current spend for this agent run
-- `kill_agent` — force-stop a hung or over-budget agent
-
-### Capability Scoping (TB-1 Minimal)
-
-For TB-1, capability scoping is done via CLAUDE.md rules, not OpenFang:
+Capability scoping is done via CLAUDE.md rules and `--allowedTools`, not a sandbox:
 
 ```yaml
 # config/capabilities.yaml
@@ -178,40 +80,60 @@ prompt-bench:
     - "git commit"
 ```
 
+The deny list is generated by `devloop.runtime.deny_list.generate_deny_rules()` and injected into the CLAUDE.md overlay during orchestration.
+
+## MCP Server: `agent-runtime`
+
+```
+src/devloop/runtime/
+├── __init__.py
+├── deny_list.py       # Generate CLAUDE.md deny rules for secret paths
+├── server.py          # MCP server with agent lifecycle tools
+└── types.py           # AgentConfig, AgentResult
+```
+
+**Tools exposed:**
+- `spawn_agent` — launch Claude Code in a worktree, return output + exit code + usage stats
+- `kill_agent` — send SIGTERM to a running agent process (validates PID belongs to claude)
+- `get_agent_output` — read the latest agent output from a worktree's .claude/ directory
+
+## Runtime Phases
+
+```
+Phase 1: Execution
+  ├── Agent reads CLAUDE.md (project + dev-loop overlay with deny list)
+  ├── Agent reads issue description from the task prompt
+  ├── Agent reads codebase (scoped to relevant files)
+  ├── Agent makes changes (edit, create, delete files)
+  ├── Agent runs tests (if applicable)
+  ├── Agent commits to worktree branch
+  └── Emit span: runtime.spawn_agent (with exit_code, duration, num_turns, tokens)
+
+Phase 2: Output
+  ├── Agent produces: diff, commit(s), optional PR description
+  ├── NDJSON stdout captured for usage parsing and replay
+  └── Emit span attributes: runtime.num_turns, runtime.input_tokens, runtime.output_tokens
+```
+
 ### OTel Instrumentation
 ```
-span: runtime.execution
+span: runtime.spawn_agent
 attributes:
-  agent.id: agent-abc123
-  agent.persona: bug-fix
-  runtime.tool_calls: 14
-  runtime.tokens_input: 12500
-  runtime.tokens_output: 3200
-  runtime.cost_usd: 0.42
-  runtime.duration_s: 45
-  runtime.files_read: 8
-  runtime.files_modified: 2
-  runtime.commits: 1
-  memory.context_loaded: true
-  memory.context_saved: true
-parent: orchestration.setup
+  runtime.model: sonnet
+  runtime.worktree_path: /tmp/dev-loop/worktrees/dl-1kz
+  runtime.cost_ceiling: 2.00
+  runtime.timeout_seconds: 300.0
+  runtime.allowed_tools: Read,Write,Edit,Glob,Grep,Bash
+  runtime.exit_code: 0
+  runtime.duration_seconds: 52.3
+  runtime.num_turns: 8
+  runtime.input_tokens: 12500
+  runtime.output_tokens: 3200
+  runtime.timed_out: false
+parent: orchestration.setup_worktree
 ```
 
-### Progressive Implementation
-
-| Phase | What's active | What's stubbed |
-|-------|--------------|----------------|
-| TB-1 | Claude Code in worktree, CLAUDE.md scoping | Token proxy (logs only), memory (no persistence) |
-| TB-2 | + retry context injection, EnCompass eval | + memory persistence |
-| TB-3 | + security scan as runtime tool | + OpenFang sandbox |
-| TB-4 | + token proxy with kill switch | + real cost ceilings |
-| TB-5 | + multi-worktree agent runs | |
-| TB-6 | + full AgentLens session capture | |
-
 ### Open Questions
-- [ ] OpenFang maturity — is it production-ready or experimental?
-- [ ] Token proxy: custom build or existing tool? (opik-openclaw has per-request cost breakdowns)
-- [ ] Memory: Letta vs Continuous-Claude-v3 — or both? Need to evaluate overlap
 - [ ] How does the agent report "I'm stuck" vs silently failing?
-- [ ] Max execution time per agent run? (separate from cost ceiling)
-- [ ] EnCompass: does checkpoint/rewind work across tool calls, or only pure Python?
+- [ ] Max execution time per agent run? (currently 300s default, separate from cost ceiling)
+- [ ] Streaming NDJSON for real-time monitoring (TB-2+)

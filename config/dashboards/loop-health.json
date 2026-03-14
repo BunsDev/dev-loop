@@ -1,0 +1,42 @@
+{
+  "title": "Loop Health",
+  "description": "dev-loop pipeline health: success rate, lead time, gate failures",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Issues Processed (24h)",
+      "type": "metric",
+      "query": "SELECT COUNT(DISTINCT trace_id) as total FROM default WHERE service_name = 'dev-loop' AND operation_name LIKE 'tb%.run' AND _timestamp >= NOW() - INTERVAL '24 HOURS'"
+    },
+    {
+      "id": 2,
+      "title": "Success Rate",
+      "type": "metric",
+      "query": "SELECT ROUND(100.0 * SUM(CASE WHEN attributes_string['gates.first_failure'] IS NULL THEN 1 ELSE 0 END) / COUNT(*), 1) as success_pct FROM default WHERE service_name = 'dev-loop' AND operation_name = 'gates.run_all' AND _timestamp >= NOW() - INTERVAL '7 DAYS'"
+    },
+    {
+      "id": 3,
+      "title": "Average Lead Time (seconds)",
+      "type": "metric",
+      "query": "SELECT ROUND(AVG(duration / 1000000), 1) as avg_lead_time_s FROM default WHERE service_name = 'dev-loop' AND operation_name LIKE 'tb%.run' AND _timestamp >= NOW() - INTERVAL '7 DAYS'"
+    },
+    {
+      "id": 4,
+      "title": "Gate Failure Breakdown",
+      "type": "bar",
+      "query": "SELECT attributes_string['gates.first_failure'] as gate, COUNT(*) as failures FROM default WHERE service_name = 'dev-loop' AND operation_name = 'gates.run_all' AND attributes_string['gates.first_failure'] IS NOT NULL AND _timestamp >= NOW() - INTERVAL '7 DAYS' GROUP BY gate ORDER BY failures DESC"
+    },
+    {
+      "id": 5,
+      "title": "Pipeline Runs Over Time",
+      "type": "line",
+      "query": "SELECT DATE_TRUNC('hour', _timestamp) as hour, COUNT(*) as runs FROM default WHERE service_name = 'dev-loop' AND operation_name LIKE 'tb%.run' AND _timestamp >= NOW() - INTERVAL '7 DAYS' GROUP BY hour ORDER BY hour"
+    },
+    {
+      "id": 6,
+      "title": "Retry Rate",
+      "type": "metric",
+      "query": "SELECT ROUND(100.0 * SUM(CASE WHEN operation_name = 'feedback.retry' THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN operation_name LIKE 'tb%.run' THEN 1 ELSE 0 END), 0), 1) as retry_pct FROM default WHERE service_name = 'dev-loop' AND _timestamp >= NOW() - INTERVAL '7 DAYS'"
+    }
+  ]
+}
