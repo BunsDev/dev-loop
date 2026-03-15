@@ -127,6 +127,10 @@ tb6-replay SESSION_ID:
     @echo "Replaying session: {{SESSION_ID}}"
     uv run python -c "from devloop.feedback.pipeline import replay_session; r = replay_session('{{SESSION_ID}}'); print(r['timeline'])"
 
+# Stress test: run all 6 TBs N times (default 30)
+stress *ARGS:
+    uv run python scripts/stress-test.py {{ARGS}}
+
 # Run all passing tracer bullets
 tb-all:
     @echo "Running all tracer bullets..."
