@@ -1,7 +1,11 @@
 """Import dev-loop alert rules into OpenObserve.
 
 Reads config/alerts/rules.yaml, translates each rule into
-OpenObserve alert API format, and creates via POST API.
+OpenObserve v2 alert API format, and creates via POST.
+
+Requires an alert destination to exist first. Creates a default
+'dev-loop-log' webhook destination that logs alerts back to
+OpenObserve as a stream if one doesn't exist.
 
 Usage:
     uv run python scripts/import-alerts.py
@@ -25,18 +29,18 @@ OO_URL = os.environ.get("OPENOBSERVE_URL", "http://localhost:5080")
 OO_USER = os.environ.get("OPENOBSERVE_USER", "admin@dev-loop.local")
 OO_PASS = os.environ.get("OPENOBSERVE_PASS", "devloop123")
 OO_ORG = os.environ.get("OPENOBSERVE_ORG", "default")
+DESTINATION_NAME = "dev-loop-log"
 
 CREDS = base64.b64encode(f"{OO_USER}:{OO_PASS}".encode()).decode()
+AUTH_HEADERS = {"Content-Type": "application/json", "Authorization": f"Basic {CREDS}"}
 
 SEVERITY_MAP = {"warning": "P2", "critical": "P1", "info": "P3"}
 
 
-def _api(method: str, path: str, data: dict | None = None) -> dict | str:
-    url = f"{OO_URL}/api/{OO_ORG}/{path}"
+def _request(method: str, url: str, data: dict | None = None) -> dict | str:
     body = json.dumps(data).encode() if data else None
     req = urllib.request.Request(
-        url, data=body, method=method,
-        headers={"Content-Type": "application/json", "Authorization": f"Basic {CREDS}"},
+        url, data=body, method=method, headers=AUTH_HEADERS,
     )
     try:
         resp = urllib.request.urlopen(req)  # nosemgrep: dynamic-urllib-use-detected
@@ -46,8 +50,47 @@ def _api(method: str, path: str, data: dict | None = None) -> dict | str:
         return f"HTTP {e.code}: {e.read().decode()[:200]}"
 
 
+def _api_v1(method: str, path: str, data: dict | None = None) -> dict | str:
+    """Call /api/{org}/{path} (v1 style, used for destinations/templates)."""
+    return _request(method, f"{OO_URL}/api/{OO_ORG}/{path}", data)
+
+
+def _api_v2(method: str, path: str, data: dict | None = None) -> dict | str:
+    """Call /api/v2/{org}/{path} (v2 style, used for alerts CRUD)."""
+    return _request(method, f"{OO_URL}/api/v2/{OO_ORG}/{path}", data)
+
+
+def ensure_destination() -> bool:
+    """Ensure the dev-loop-log alert destination exists. Returns True if ready."""
+    result = _api_v1("GET", "alerts/destinations")
+    if isinstance(result, str):
+        print(f"  Warning: could not list destinations: {result}")
+        # Try creating anyway
+    else:
+        destinations = result if isinstance(result, list) else result.get("list", result)
+        if isinstance(destinations, list):
+            for d in destinations:
+                if d.get("name") == DESTINATION_NAME:
+                    return True
+
+    # Create the destination: webhook that logs alerts back to an OO stream
+    dest = {
+        "name": DESTINATION_NAME,
+        "url": f"{OO_URL}/api/{OO_ORG}/devloop_alerts/_json",
+        "method": "post",
+        "template": "prebuilt_webhook",
+        "headers": {"Authorization": f"Basic {CREDS}"},
+    }
+    result = _api_v1("POST", "alerts/destinations", dest)
+    if isinstance(result, str):
+        print(f"  Failed to create destination: {result}")
+        return False
+    print(f"  Created alert destination '{DESTINATION_NAME}' (alerts → OO stream)")
+    return True
+
+
 def _translate_alert(rule: dict) -> dict:
-    """Convert our YAML alert rule to OpenObserve alert API format."""
+    """Convert our YAML alert rule to OpenObserve v2 alert API format."""
     condition = rule["condition"]
     return {
         "name": rule["name"],
@@ -76,20 +119,23 @@ def _translate_alert(rule: dict) -> dict:
         "enabled": True,
         "description": rule.get("description", ""),
         "priority": SEVERITY_MAP.get(rule.get("severity", "warning"), "P2"),
+        "destinations": [DESTINATION_NAME],
     }
 
 
 def delete_existing():
-    """Delete all existing alerts."""
-    result = _api("GET", "alerts")
+    """Delete all existing dev-loop alerts."""
+    result = _api_v2("GET", "alerts")
     if isinstance(result, str):
         print(f"  Failed to list alerts: {result}")
         return
     alerts = result if isinstance(result, list) else result.get("list", [])
     for alert in alerts:
+        alert_id = alert.get("id", "")
         name = alert.get("name", "?")
-        _api("DELETE", f"alerts/{name}")
-        print(f"  Deleted: {name}")
+        if alert_id:
+            _api_v2("DELETE", f"alerts/{alert_id}")
+            print(f"  Deleted: {name} ({alert_id})")
 
 
 def import_alerts(dry_run: bool = False) -> int:
@@ -115,7 +161,7 @@ def import_alerts(dry_run: bool = False) -> int:
             imported += 1
             continue
 
-        result = _api("POST", "alerts", alert)
+        result = _api_v2("POST", "alerts", alert)
         if isinstance(result, str):
             print(f"  FAILED: {rule['name']} → {result}")
         else:
@@ -132,7 +178,13 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print translated JSON without posting")
     args = parser.parse_args()
 
-    print(f"OpenObserve: {OO_URL}/api/{OO_ORG}")
+    print(f"OpenObserve: {OO_URL} (org: {OO_ORG})")
+
+    if not args.dry_run:
+        print("Ensuring alert destination exists...")
+        if not ensure_destination():
+            print("Cannot proceed without a destination. Aborting.")
+            return
 
     if args.delete_existing and not args.dry_run:
         print("Deleting existing alerts...")
