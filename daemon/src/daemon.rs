@@ -121,6 +121,9 @@ pub fn start() {
             started_at: chrono::Utc::now(),
             sessions,
             config: Arc::clone(&shared_config),
+            check_spans: Arc::new(dashmap::DashMap::new()),
+            tool_call_history: Arc::new(dashmap::DashMap::new()),
+            killed_gates: Arc::new(dashmap::DashMap::new()),
         });
 
         // Install signal handler for graceful shutdown
@@ -331,6 +334,37 @@ pub fn stream() {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
         }
+    }
+}
+
+/// POST JSON to the daemon over the Unix socket.
+pub fn post_to_endpoint(path: &str, body: &str) -> Result<String, String> {
+    let sock = socket_path();
+    let mut stream = UnixStream::connect(&sock).map_err(|e| format!("connect: {e}"))?;
+
+    let request = format!(
+        "POST {path} HTTP/1.1\r\n\
+         Host: localhost\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("write: {e}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| format!("read: {e}"))?;
+
+    if let Some(pos) = response.find("\r\n\r\n") {
+        Ok(response[pos + 4..].to_string())
+    } else {
+        Ok(response)
     }
 }
 

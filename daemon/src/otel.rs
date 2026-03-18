@@ -30,8 +30,30 @@ pub fn span_id() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Generate a UUID v4 string.
+pub fn uuid_v4() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("getrandom");
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 1
+    let h = hex::encode(bytes);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
 /// Build the session root span + summary span for a completed session.
-pub fn build_session_spans(session: &SessionInfo, outcome: Option<&str>) -> Vec<serde_json::Value> {
+pub fn build_session_spans(
+    session: &SessionInfo,
+    outcome: Option<&str>,
+    token_estimate: Option<&crate::continuity::TokenEstimate>,
+    ambient_mode: &str,
+) -> Vec<serde_json::Value> {
     let start_ns = datetime_to_nanos(&session.started_at_utc);
     let end_ns = now_nanos();
     let duration_s = session.started_at.elapsed().as_secs();
@@ -45,12 +67,40 @@ pub fn build_session_spans(session: &SessionInfo, outcome: Option<&str>) -> Vec<
         attr_int("session.checks", session.check_count as i64),
         attr_int("session.blocks", session.block_count as i64),
         attr_int("session.warns", session.warn_count as i64),
+        // ATSC Core
+        attr_str("atsc.spec_version", "0.1.0"),
+        attr_str("atsc.span_kind", "agent.invoke"),
+        attr_str("atsc.event_id", &uuid_v4()),
+        attr_str(
+            "atsc.status",
+            if session.block_count > 0 { "error" } else { "ok" },
+        ),
+        attr_str("run.id", &session.session_id),
+        attr_str("run.kind", "session"),
+        attr_str("timestamp", &session.started_at_utc.to_rfc3339()),
+        // ATSC Session Object
+        attr_str("session.kind", "interactive"),
+        attr_str("session.state", "completed"),
+        attr_str("session.participant.channel", "cli"),
+        // dev-loop extensions
+        attr_str("x.devloop.ambient_mode", ambient_mode),
+        attr_str("x.devloop.config_hash", &session.config_hash),
     ];
     if let Some(outcome) = outcome {
         attributes.push(attr_str("session.outcome", outcome));
     }
+    if let Some(te) = token_estimate {
+        attributes.push(attr_int(
+            "session.context.tokens_consumed",
+            te.total as i64,
+        ));
+        attributes.push(attr_str(
+            "session.context.pct",
+            &format!("{:.1}", te.context_pct * 100.0),
+        ));
+    }
 
-    let root_span = json!({
+    let mut root_span = json!({
         "traceId": session.trace_id,
         "spanId": session.root_span_id,
         "name": "ambient.session",
@@ -60,6 +110,16 @@ pub fn build_session_spans(session: &SessionInfo, outcome: Option<&str>) -> Vec<
         "attributes": attributes,
         "status": { "code": 1 }
     });
+
+    // Cross-trace link to previous session
+    if let Some(ref prev_trace) = session.previous_trace_id {
+        if let Some(ref prev_span) = session.previous_span_id {
+            root_span["links"] = json!([{
+                "traceId": prev_trace,
+                "spanId": prev_span,
+            }]);
+        }
+    }
 
     let summary_span = json!({
         "traceId": session.trace_id,
@@ -91,8 +151,31 @@ pub fn build_check_span(
     action: &str,
     check_type: &str,
     duration_us: u64,
+    pattern: Option<&str>,
+    category: &str,
 ) -> serde_json::Value {
     let now = now_nanos();
+
+    let mut attrs = vec![
+        attr_str("check.tool", tool_name),
+        attr_str("check.action", action),
+        attr_str("check.type", check_type),
+        attr_int("check.duration_us", duration_us as i64),
+        // ATSC Guardrail
+        attr_str("atsc.spec_version", "0.1.0"),
+        attr_str("atsc.span_kind", "guardrail.check"),
+        attr_str("atsc.event_id", &uuid_v4()),
+        attr_str("guardrail.name", check_type),
+        attr_str("guardrail.action", action),
+        attr_str(
+            "guardrail.triggered",
+            if action != "allow" { "true" } else { "false" },
+        ),
+        attr_str("guardrail.categories", category),
+    ];
+    if let Some(p) = pattern {
+        attrs.push(attr_str("guardrail.policy", p));
+    }
 
     json!({
         "traceId": trace_id,
@@ -102,11 +185,34 @@ pub fn build_check_span(
         "kind": 1,
         "startTimeUnixNano": (now - duration_us * 1000).to_string(),
         "endTimeUnixNano": now.to_string(),
+        "attributes": attrs,
+        "status": { "code": 1 }
+    })
+}
+
+/// Build a handoff span (for session continuity).
+pub fn build_handoff_span(
+    trace_id: &str,
+    parent_span_id: &str,
+    source: &str,
+    token_count: u64,
+) -> serde_json::Value {
+    let now = now_nanos();
+    json!({
+        "traceId": trace_id,
+        "spanId": span_id(),
+        "parentSpanId": parent_span_id,
+        "name": "agent.handoff",
+        "kind": 1,
+        "startTimeUnixNano": now.to_string(),
+        "endTimeUnixNano": now.to_string(),
         "attributes": [
-            attr_str("check.tool", tool_name),
-            attr_str("check.action", action),
-            attr_str("check.type", check_type),
-            attr_int("check.duration_us", duration_us as i64),
+            attr_str("atsc.spec_version", "0.1.0"),
+            attr_str("atsc.span_kind", "agent.handoff"),
+            attr_str("atsc.event_id", &uuid_v4()),
+            attr_str("handoff.source", source),
+            attr_str("handoff.context_transfer.strategy", "summary"),
+            attr_int("handoff.context_transfer.token_count", token_count as i64),
         ],
         "status": { "code": 1 }
     })
@@ -328,9 +434,12 @@ mod tests {
             check_count: 10,
             block_count: 2,
             warn_count: 3,
+            config_hash: "abc123def456".into(),
+            previous_trace_id: None,
+            previous_span_id: None,
         };
 
-        let spans = build_session_spans(&session, None);
+        let spans = build_session_spans(&session, None, None, "enforce");
         assert_eq!(spans.len(), 2);
 
         // Root span
@@ -339,22 +448,29 @@ mod tests {
         assert_eq!(spans[0]["spanId"], "b".repeat(16));
         assert!(spans[0].get("parentSpanId").is_none());
 
+        // ATSC attributes present
+        let root_attrs = spans[0]["attributes"].as_array().unwrap();
+        let atsc_version: Vec<_> = root_attrs
+            .iter()
+            .filter(|a| a["key"] == "atsc.spec_version")
+            .collect();
+        assert_eq!(atsc_version.len(), 1);
+        assert_eq!(atsc_version[0]["value"]["stringValue"], "0.1.0");
+
         // Summary span
         assert_eq!(spans[1]["name"], "ambient.session.summary");
         assert_eq!(spans[1]["traceId"], "a".repeat(32));
         assert_eq!(spans[1]["parentSpanId"], "b".repeat(16));
 
         // No outcome attribute
-        let attrs: Vec<_> = spans[0]["attributes"]
-            .as_array()
-            .unwrap()
+        let attrs: Vec<_> = root_attrs
             .iter()
             .filter(|a| a["key"] == "session.outcome")
             .collect();
         assert!(attrs.is_empty());
 
         // With outcome
-        let spans = build_session_spans(&session, Some("success"));
+        let spans = build_session_spans(&session, Some("success"), None, "enforce");
         let attrs: Vec<_> = spans[0]["attributes"]
             .as_array()
             .unwrap()
@@ -366,6 +482,45 @@ mod tests {
     }
 
     #[test]
+    fn uuid_v4_format() {
+        let id = uuid_v4();
+        assert_eq!(id.len(), 36);
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0].len(), 8);
+        assert_eq!(parts[1].len(), 4);
+        assert_eq!(parts[2].len(), 4);
+        assert!(parts[2].starts_with('4')); // version 4
+        assert_eq!(parts[3].len(), 4);
+        assert_eq!(parts[4].len(), 12);
+    }
+
+    #[test]
+    fn cross_trace_link_when_previous_set() {
+        let session = SessionInfo {
+            session_id: "test-session".into(),
+            cwd: "/repo".into(),
+            repo_root: None,
+            started_at: std::time::Instant::now(),
+            started_at_utc: chrono::Utc::now(),
+            trace_id: "a".repeat(32),
+            root_span_id: "b".repeat(16),
+            check_count: 0,
+            block_count: 0,
+            warn_count: 0,
+            config_hash: "test".into(),
+            previous_trace_id: Some("c".repeat(32)),
+            previous_span_id: Some("d".repeat(16)),
+        };
+
+        let spans = build_session_spans(&session, None, None, "enforce");
+        let links = spans[0]["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["traceId"], "c".repeat(32));
+        assert_eq!(links[0]["spanId"], "d".repeat(16));
+    }
+
+    #[test]
     fn check_span_has_parent() {
         let span = build_check_span(
             &"a".repeat(32),
@@ -374,6 +529,8 @@ mod tests {
             "block",
             "deny_list",
             150,
+            Some(".env"),
+            "file_protection",
         );
 
         assert_eq!(span["name"], "ambient.check");
@@ -390,6 +547,13 @@ mod tests {
         assert!(attrs.contains(&"check.action"));
         assert!(attrs.contains(&"check.type"));
         assert!(attrs.contains(&"check.duration_us"));
+        // ATSC guardrail attributes
+        assert!(attrs.contains(&"atsc.spec_version"));
+        assert!(attrs.contains(&"guardrail.name"));
+        assert!(attrs.contains(&"guardrail.action"));
+        assert!(attrs.contains(&"guardrail.triggered"));
+        assert!(attrs.contains(&"guardrail.categories"));
+        assert!(attrs.contains(&"guardrail.policy"));
     }
 
     #[test]

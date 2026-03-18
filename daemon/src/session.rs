@@ -15,6 +15,9 @@ pub struct SessionInfo {
     pub check_count: u32,
     pub block_count: u32,
     pub warn_count: u32,
+    pub config_hash: String,
+    pub previous_trace_id: Option<String>,
+    pub previous_span_id: Option<String>,
 }
 
 /// Thread-safe map of active sessions, keyed by session_id.
@@ -30,6 +33,7 @@ pub fn register(
     session_id: String,
     cwd: String,
     repo_root: Option<String>,
+    config_hash: String,
 ) -> (String, String) {
     let trace_id = random_hex(16);
     let root_span_id = random_hex(8);
@@ -45,6 +49,9 @@ pub fn register(
         check_count: 0,
         block_count: 0,
         warn_count: 0,
+        config_hash,
+        previous_trace_id: None,
+        previous_span_id: None,
     };
 
     sessions.insert(session_id, info);
@@ -87,6 +94,7 @@ mod tests {
             "s1".into(),
             "/home/user/repo".into(),
             Some("/home/user/repo".into()),
+            "test".into(),
         );
         assert_eq!(trace_id.len(), 32);
         assert_eq!(span_id.len(), 16);
@@ -107,7 +115,7 @@ mod tests {
     #[test]
     fn record_check_counters() {
         let sessions = new_session_map();
-        register(&sessions, "s1".into(), "/repo".into(), None);
+        register(&sessions, "s1".into(), "/repo".into(), None, "test".into());
 
         record_check(&sessions, "s1", "allow");
         record_check(&sessions, "s1", "block");
@@ -129,9 +137,9 @@ mod tests {
     #[test]
     fn multiple_concurrent_sessions() {
         let sessions = new_session_map();
-        register(&sessions, "s1".into(), "/repo1".into(), None);
-        register(&sessions, "s2".into(), "/repo2".into(), None);
-        register(&sessions, "s3".into(), "/repo3".into(), None);
+        register(&sessions, "s1".into(), "/repo1".into(), None, "test".into());
+        register(&sessions, "s2".into(), "/repo2".into(), None, "test".into());
+        register(&sessions, "s3".into(), "/repo3".into(), None, "test".into());
         assert_eq!(sessions.len(), 3);
 
         deregister(&sessions, "s2");

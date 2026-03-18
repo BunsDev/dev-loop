@@ -84,6 +84,16 @@ pub enum Command {
     },
     /// Reload daemon configuration (sends SIGHUP)
     Reload,
+    /// Temporarily disable a checkpoint gate (until unkill or daemon restart)
+    Kill {
+        /// Gate name to disable (e.g. "sanity", "semgrep")
+        gate: String,
+    },
+    /// Re-enable a killed gate (or all if no gate specified)
+    Unkill {
+        /// Gate name to re-enable (omit to re-enable all)
+        gate: Option<String>,
+    },
     /// Run checkpoint gates offline (no daemon needed)
     #[command(name = "checkpoint")]
     Checkpoint {

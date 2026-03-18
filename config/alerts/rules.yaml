@@ -84,3 +84,40 @@ alerts:
       operator: ">="
     frequency_minutes: 5
     severity: critical
+
+  - name: session_burn_rate
+    description: "Session token consumption exceeds 2x 7-day rolling average"
+    stream: default
+    condition:
+      sql: >
+        SELECT trace_id,
+               CAST(attributes_int64['session.context.tokens_consumed'] AS INT) as tokens
+        FROM default
+        WHERE service_name = 'dev-loop'
+          AND CAST(attributes_int64['session.context.tokens_consumed'] AS INT) > (
+            SELECT AVG(CAST(attributes_int64['session.context.tokens_consumed'] AS INT)) * 2
+            FROM default
+            WHERE _timestamp > NOW() - INTERVAL '7 days'
+              AND attributes_int64['session.context.tokens_consumed'] IS NOT NULL
+          )
+          AND _timestamp >= NOW() - INTERVAL '10 MINUTES'
+      threshold: 1
+      operator: ">="
+    frequency_minutes: 5
+    severity: warning
+
+  - name: guardrail_trigger_rate_spike
+    description: "Guardrail block+warn rate exceeds 3x the 7-day hourly baseline"
+    stream: default
+    condition:
+      sql: >
+        SELECT COUNT(*) as trigger_count
+        FROM default
+        WHERE service_name = 'dev-loop'
+          AND (attributes_string['guardrail.action'] = 'block'
+               OR attributes_string['guardrail.action'] = 'warn')
+          AND _timestamp >= NOW() - INTERVAL '1 HOUR'
+      threshold: 3
+      operator: ">="
+    frequency_minutes: 60
+    severity: warning

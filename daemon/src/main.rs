@@ -68,6 +68,29 @@ fn main() {
         } => continuity::record_outcome(&session_id, &outcome, notes.as_deref()),
         Command::ConfigLint { dir } => config::lint_and_print(dir.as_deref()),
         Command::Reload => daemon::reload(),
+        Command::Kill { gate } => {
+            let body = serde_json::json!({"gate": gate}).to_string();
+            match daemon::post_to_endpoint("/kill", &body) {
+                Ok(r) => println!("{r}"),
+                Err(e) => {
+                    eprintln!("Failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Unkill { gate } => {
+            let body = match gate {
+                Some(g) => serde_json::json!({"gate": g}).to_string(),
+                None => "{}".to_string(),
+            };
+            match daemon::post_to_endpoint("/unkill", &body) {
+                Ok(r) => println!("{r}"),
+                Err(e) => {
+                    eprintln!("Failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Command::Checkpoint { dir, json } => run_checkpoint_cli(dir.as_deref(), json),
         Command::Feedback {
             event_id,

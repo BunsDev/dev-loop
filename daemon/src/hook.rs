@@ -75,7 +75,16 @@ fn get_from_daemon(path: &str) -> Option<String> {
 }
 
 /// Fire-and-forget event posting to daemon. Does not wait for response.
-fn fire_event_to_daemon(session_id: &str, tool_name: &str, action: &str, check_type: &str, duration_us: u64) {
+fn fire_event_to_daemon(
+    session_id: &str,
+    tool_name: &str,
+    action: &str,
+    check_type: &str,
+    duration_us: u64,
+    category: Option<&str>,
+    pattern: Option<&str>,
+    tool_key: &str,
+) {
     let body = serde_json::json!({
         "type": "check",
         "session_id": session_id,
@@ -83,6 +92,9 @@ fn fire_event_to_daemon(session_id: &str, tool_name: &str, action: &str, check_t
         "action": action,
         "check": check_type,
         "us": duration_us,
+        "category": category,
+        "pattern": pattern,
+        "tool_key": tool_key,
     })
     .to_string();
 
@@ -273,6 +285,18 @@ pub fn pre_tool_use() {
         .unwrap_or("")
         .to_string();
 
+    // Compute tool_key before moving tool_input
+    let tool_key = match tool_name {
+        "Bash" => tool_input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .and_then(|c| c.split_whitespace().next())
+            .unwrap_or("bash")
+            .to_string(),
+        "Write" | "Edit" => file_path_for_override.clone(),
+        other => other.to_string(),
+    };
+
     let request = CheckRequest {
         tool_name: tool_name.to_string(),
         tool_input,
@@ -286,7 +310,10 @@ pub fn pre_tool_use() {
     if let Some(ref sid) = request.session_id {
         let action_str = format!("{:?}", result.action).to_lowercase();
         let check_type = result.check_type.as_deref().unwrap_or("unknown");
-        fire_event_to_daemon(sid, tool_name, &action_str, check_type, result.duration_us);
+        fire_event_to_daemon(
+            sid, tool_name, &action_str, check_type, result.duration_us,
+            result.category.as_deref(), result.pattern.as_deref(), &tool_key,
+        );
     }
 
     // Shadow mode: log verdict but always allow
@@ -439,7 +466,14 @@ pub fn post_tool_use() {
     if let Some(ref sid) = request.session_id {
         let action_str = format!("{:?}", result.action).to_lowercase();
         let check_type = result.check_type.as_deref().unwrap_or("unknown");
-        fire_event_to_daemon(sid, tool_name, &action_str, check_type, result.duration_us);
+        let post_tool_key = match tool_name {
+            "Write" | "Edit" => file_path.to_string(),
+            other => other.to_string(),
+        };
+        fire_event_to_daemon(
+            sid, tool_name, &action_str, check_type, result.duration_us,
+            result.category.as_deref(), result.pattern.as_deref(), &post_tool_key,
+        );
     }
 
     // Shadow mode: log verdict but don't warn user
@@ -741,7 +775,7 @@ fn write_session_handoff(
     let context_limit = merged.continuity.context_limit;
 
     // Get session stats from daemon
-    let (checks, blocked, warned) = get_session_stats(session_id);
+    let (checks, blocked, warned, trace_id, root_span_id) = get_session_stats(session_id);
 
     // Try to get transcript info
     let transcript_path = transcript::find_transcript(session_id);
@@ -779,6 +813,11 @@ fn write_session_handoff(
         repo_root,
         outcome: None, // Outcome set later via dl outcome
         notes: None,
+        goal,
+        now,
+        test_plan,
+        trace_id,
+        root_span_id,
         files_modified,
         files_created,
         ambient_stats: continuity::AmbientStats {
@@ -787,29 +826,28 @@ fn write_session_handoff(
             warned,
         },
         token_estimate,
-        goal,
-        now,
-        test_plan,
     };
 
     continuity::write_handoff(&handoff).ok()
 }
 
-/// Get session check/block/warn stats from daemon.
-fn get_session_stats(session_id: &str) -> (u32, u32, u32) {
+/// Get session check/block/warn stats and trace IDs from daemon.
+fn get_session_stats(
+    session_id: &str,
+) -> (u32, u32, u32, Option<String>, Option<String>) {
     let response = match get_from_daemon("/status") {
         Some(r) => r,
-        None => return (0, 0, 0),
+        None => return (0, 0, 0, None, None),
     };
 
     let data: serde_json::Value = match serde_json::from_str(&response) {
         Ok(v) => v,
-        Err(_) => return (0, 0, 0),
+        Err(_) => return (0, 0, 0, None, None),
     };
 
     let sessions = match data.get("sessions").and_then(|v| v.as_array()) {
         Some(s) => s,
-        None => return (0, 0, 0),
+        None => return (0, 0, 0, None, None),
     };
 
     for session in sessions {
@@ -826,11 +864,19 @@ fn get_session_stats(session_id: &str) -> (u32, u32, u32) {
                 .get("warns")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
-            return (checks, blocks, warns);
+            let trace_id = session
+                .get("trace_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let root_span_id = session
+                .get("root_span_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            return (checks, blocks, warns, trace_id, root_span_id);
         }
     }
 
-    (0, 0, 0)
+    (0, 0, 0, None, None)
 }
 
 #[cfg(test)]

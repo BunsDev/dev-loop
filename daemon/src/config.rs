@@ -90,6 +90,8 @@ pub struct AmbientConfig {
     pub continuity: ContinuityConfig,
     #[serde(default)]
     pub event_log: EventLogConfig,
+    #[serde(default)]
+    pub loop_detection: LoopDetectionConfig,
 }
 
 impl Default for AmbientConfig {
@@ -107,6 +109,7 @@ impl Default for AmbientConfig {
             checkpoint: CheckpointConfig::default(),
             continuity: ContinuityConfig::default(),
             event_log: EventLogConfig::default(),
+            loop_detection: LoopDetectionConfig::default(),
         }
     }
 }
@@ -266,6 +269,33 @@ impl Default for EventLogConfig {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LoopDetectionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_loop_window")]
+    pub window_secs: u64,
+    #[serde(default = "default_loop_threshold")]
+    pub threshold: u32,
+}
+
+fn default_loop_window() -> u64 {
+    120
+}
+fn default_loop_threshold() -> u32 {
+    5
+}
+
+impl Default for LoopDetectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            window_secs: 120,
+            threshold: 5,
+        }
+    }
+}
+
 // ── Per-Repo Config (.devloop.yaml) ────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -323,9 +353,50 @@ pub struct MergedConfig {
     pub checkpoint: CheckpointConfig,
     pub continuity: ContinuityConfig,
     pub event_log: EventLogConfig,
+    pub loop_detection: LoopDetectionConfig,
 
     // Where the repo config came from (if any)
     pub repo_root: Option<PathBuf>,
+}
+
+impl MergedConfig {
+    /// SHA-256 hash of the active check engine configuration.
+    /// Returns the first 16 hex chars (8 bytes) for compact identification.
+    pub fn config_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for p in &self.deny_list_extra {
+            hasher.update(p.as_bytes());
+            hasher.update(b"\x00");
+        }
+        hasher.update(b"\x01");
+        for p in &self.deny_list_remove {
+            hasher.update(p.as_bytes());
+            hasher.update(b"\x00");
+        }
+        hasher.update(b"\x01");
+        for p in &self.dangerous_ops_extra {
+            hasher.update(p.as_bytes());
+            hasher.update(b"\x00");
+        }
+        hasher.update(b"\x01");
+        for p in &self.dangerous_ops_allow {
+            hasher.update(p.as_bytes());
+            hasher.update(b"\x00");
+        }
+        hasher.update(b"\x01");
+        for p in &self.secrets_extra {
+            hasher.update(p.as_bytes());
+            hasher.update(b"\x00");
+        }
+        hasher.update(b"\x01");
+        for p in &self.secrets_file_allowlist {
+            hasher.update(p.as_bytes());
+            hasher.update(b"\x00");
+        }
+        let result = hasher.finalize();
+        hex::encode(&result[..8]) // 16 hex chars
+    }
 }
 
 // ── Loading ────────────────────────────────────────────────────
@@ -458,6 +529,7 @@ fn merge(
         checkpoint,
         continuity: global.continuity.clone(),
         event_log: global.event_log.clone(),
+        loop_detection: global.loop_detection.clone(),
         repo_root,
     }
 }
@@ -546,7 +618,7 @@ pub struct LintWarning {
     pub message: String,
 }
 
-const KNOWN_GATES: &[&str] = &["sanity", "semgrep", "secrets", "atdd", "review"];
+pub const KNOWN_GATES: &[&str] = &["sanity", "semgrep", "secrets", "atdd", "review"];
 
 pub fn lint(merged: &MergedConfig) -> Vec<LintWarning> {
     let mut warnings = Vec::new();
@@ -1122,5 +1194,56 @@ checkpoint:
         assert!(config.deny_list.extra_patterns.is_empty());
         assert!(config.dangerous_ops.allow_patterns.is_empty());
         assert_eq!(config.checkpoint.gates.len(), 5);
+    }
+
+    #[test]
+    fn config_hash_same_config_same_hash() {
+        let global = AmbientConfig::default();
+        let merged1 = merge(&global, None);
+        let merged2 = merge(&global, None);
+        assert_eq!(merged1.config_hash(), merged2.config_hash());
+    }
+
+    #[test]
+    fn config_hash_different_patterns_different_hash() {
+        let global1 = AmbientConfig::default();
+        let merged1 = merge(&global1, None);
+
+        let global2 = AmbientConfig {
+            deny_list: PatternOverrides {
+                extra_patterns: vec!["*.vault".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged2 = merge(&global2, None);
+
+        assert_ne!(merged1.config_hash(), merged2.config_hash());
+    }
+
+    #[test]
+    fn config_hash_is_16_hex_chars() {
+        let global = AmbientConfig::default();
+        let merged = merge(&global, None);
+        let hash = merged.config_hash();
+        assert_eq!(hash.len(), 16);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn loop_detection_config_defaults() {
+        let config = LoopDetectionConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.window_secs, 120);
+        assert_eq!(config.threshold, 5);
+    }
+
+    #[test]
+    fn parse_loop_detection_config() {
+        let yaml = "loop_detection:\n  enabled: false\n  window_secs: 60\n  threshold: 3\n";
+        let config: AmbientConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.loop_detection.enabled);
+        assert_eq!(config.loop_detection.window_secs, 60);
+        assert_eq!(config.loop_detection.threshold, 3);
     }
 }

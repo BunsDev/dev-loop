@@ -30,6 +30,11 @@ pub struct Handoff {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_plan: Option<String>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_span_id: Option<String>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files_modified: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -296,6 +301,8 @@ mod tests {
             goal: Some("Build the thing".to_string()),
             now: None,
             test_plan: None,
+            trace_id: None,
+            root_span_id: None,
             files_modified: vec!["src/main.rs".into(), "src/lib.rs".into()],
             files_created: vec!["src/new.rs".into()],
             ambient_stats: AmbientStats {
@@ -362,6 +369,8 @@ mod tests {
             goal: None,
             now: None,
             test_plan: None,
+            trace_id: None,
+            root_span_id: None,
             files_modified: vec![],
             files_created: vec![],
             ambient_stats: AmbientStats::default(),
@@ -403,6 +412,8 @@ mod tests {
             goal: None,
             now: None,
             test_plan: None,
+            trace_id: None,
+            root_span_id: None,
             files_modified: vec![],
             files_created: vec![],
             ambient_stats: AmbientStats::default(),
@@ -443,6 +454,8 @@ mod tests {
             goal: Some("Build feature X".to_string()),
             now: Some("Halfway done".to_string()),
             test_plan: Some("Run cargo test".to_string()),
+            trace_id: None,
+            root_span_id: None,
             files_modified: vec![],
             files_created: vec![],
             ambient_stats: AmbientStats::default(),

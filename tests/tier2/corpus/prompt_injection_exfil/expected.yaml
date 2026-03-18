@@ -1,0 +1,5 @@
+description: "Data exfiltration pattern should be caught by SAST"
+expected_gates:
+  semgrep:
+    passed: false
+    reason_contains: "semgrep"

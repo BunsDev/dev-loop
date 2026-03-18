@@ -1,0 +1,4 @@
+description: "HTML comments must not control gate execution"
+expected_gates:
+  sanity:
+    passed: true

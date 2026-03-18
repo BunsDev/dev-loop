@@ -1,5 +1,6 @@
 pub mod dangerous_ops;
 pub mod deny_list;
+pub mod loop_detect;
 pub mod secrets;
 
 use serde::{Deserialize, Serialize};
@@ -66,6 +67,8 @@ impl CheckEngine {
                 check_type: None,
                 duration_us: start.elapsed().as_micros() as u64,
                 is_commit: false,
+                category: None,
+                pattern: None,
             },
         }
     }
@@ -87,6 +90,8 @@ impl CheckEngine {
                 check_type: Some("deny_list".to_string()),
                 duration_us: start.elapsed().as_micros() as u64,
                 is_commit: false,
+                category: Some("file_protection".into()),
+                pattern: Some(deny_match.pattern.clone()),
             }
         } else {
             CheckResult {
@@ -95,6 +100,8 @@ impl CheckEngine {
                 check_type: Some("deny_list".to_string()),
                 duration_us: start.elapsed().as_micros() as u64,
                 is_commit: false,
+                category: Some("file_protection".into()),
+                pattern: None,
             }
         }
     }
@@ -116,12 +123,15 @@ impl CheckEngine {
                 check_type: Some("secrets".to_string()),
                 duration_us: start.elapsed().as_micros() as u64,
                 is_commit: false,
+                category: Some("secret_detection".into()),
+                pattern: None,
             }
         } else {
             let descriptions: Vec<String> = matches
                 .iter()
                 .map(|m| format!("line {}: {} ({})", m.line, m.description, m.preview))
                 .collect();
+            let first_pattern = matches[0].description.clone();
             CheckResult {
                 action: Action::Warn,
                 reason: Some(format!(
@@ -131,6 +141,8 @@ impl CheckEngine {
                 check_type: Some("secrets".to_string()),
                 duration_us: start.elapsed().as_micros() as u64,
                 is_commit: false,
+                category: Some("secret_detection".into()),
+                pattern: Some(first_pattern),
             }
         }
     }
@@ -154,6 +166,8 @@ impl CheckEngine {
                 check_type: Some("dangerous_ops".to_string()),
                 duration_us: start.elapsed().as_micros() as u64,
                 is_commit,
+                category: Some("command_safety".into()),
+                pattern: None,
             }
         } else {
             // Use the highest severity match
@@ -162,6 +176,7 @@ impl CheckEngine {
                 .iter()
                 .map(|m| format!("{} (matched: '{}')", m.description, m.matched_text))
                 .collect();
+            let first_pattern = matches[0].matched_text.clone();
 
             CheckResult {
                 action: if has_block {
@@ -173,6 +188,8 @@ impl CheckEngine {
                 check_type: Some("dangerous_ops".to_string()),
                 duration_us: start.elapsed().as_micros() as u64,
                 is_commit,
+                category: Some("command_safety".into()),
+                pattern: Some(first_pattern),
             }
         }
     }
@@ -208,6 +225,12 @@ pub struct CheckResult {
     /// True if this is a git commit command (triggers Tier 2)
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_commit: bool,
+    /// ATSC failure taxonomy category (e.g. "file_protection", "command_safety", "secret_detection")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// The specific pattern or text that triggered the check
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,4 +239,85 @@ pub enum Action {
     Allow,
     Block,
     Warn,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deny_list_returns_file_protection_category() {
+        let engine = CheckEngine::new();
+        let request = CheckRequest {
+            tool_name: "Write".to_string(),
+            tool_input: serde_json::json!({"file_path": ".env"}),
+            phase: CheckPhase::Pre,
+            session_id: None,
+        };
+        let result = engine.check(&request);
+        assert_eq!(result.action, Action::Block);
+        assert_eq!(result.category.as_deref(), Some("file_protection"));
+        assert!(result.pattern.is_some());
+    }
+
+    #[test]
+    fn dangerous_ops_returns_command_safety_category() {
+        let engine = CheckEngine::new();
+        let request = CheckRequest {
+            tool_name: "Bash".to_string(),
+            tool_input: serde_json::json!({"command": "rm -rf /"}),
+            phase: CheckPhase::Pre,
+            session_id: None,
+        };
+        let result = engine.check(&request);
+        assert_ne!(result.action, Action::Allow);
+        assert_eq!(result.category.as_deref(), Some("command_safety"));
+        assert!(result.pattern.is_some());
+    }
+
+    #[test]
+    fn secrets_returns_secret_detection_category() {
+        let engine = CheckEngine::new();
+        let request = CheckRequest {
+            tool_name: "Write".to_string(),
+            tool_input: serde_json::json!({
+                "file_path": "config.yaml",
+                "content": "api_key = \"sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\""
+            }),
+            phase: CheckPhase::Post,
+            session_id: None,
+        };
+        let result = engine.check(&request);
+        assert_eq!(result.category.as_deref(), Some("secret_detection"));
+    }
+
+    #[test]
+    fn unknown_tool_returns_none_category() {
+        let engine = CheckEngine::new();
+        let request = CheckRequest {
+            tool_name: "Read".to_string(),
+            tool_input: serde_json::json!({}),
+            phase: CheckPhase::Pre,
+            session_id: None,
+        };
+        let result = engine.check(&request);
+        assert_eq!(result.action, Action::Allow);
+        assert!(result.category.is_none());
+        assert!(result.pattern.is_none());
+    }
+
+    #[test]
+    fn allow_result_has_category_but_no_pattern() {
+        let engine = CheckEngine::new();
+        let request = CheckRequest {
+            tool_name: "Write".to_string(),
+            tool_input: serde_json::json!({"file_path": "src/main.rs"}),
+            phase: CheckPhase::Pre,
+            session_id: None,
+        };
+        let result = engine.check(&request);
+        assert_eq!(result.action, Action::Allow);
+        assert_eq!(result.category.as_deref(), Some("file_protection"));
+        assert!(result.pattern.is_none());
+    }
 }

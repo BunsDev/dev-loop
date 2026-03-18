@@ -4,6 +4,7 @@ use crate::event_log::EventLogWriter;
 use crate::otel;
 use crate::session::{self, SessionMap};
 use crate::sse::{Event, SseBroadcast};
+use dashmap::DashMap;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
@@ -24,6 +25,12 @@ pub struct ServerState {
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub sessions: SessionMap,
     pub config: Arc<tokio::sync::RwLock<crate::config::AmbientConfig>>,
+    /// Accumulated check spans per session (drained at session end for OTel export).
+    pub check_spans: Arc<DashMap<String, Vec<serde_json::Value>>>,
+    /// Tool call history per session for loop detection.
+    pub tool_call_history: Arc<DashMap<String, Vec<(String, std::time::Instant)>>>,
+    /// Temporarily killed gates (gate name → when killed).
+    pub killed_gates: Arc<DashMap<String, chrono::DateTime<chrono::Utc>>>,
 }
 
 /// Run the HTTP server on a Unix domain socket.
@@ -90,6 +97,8 @@ async fn handle_request(
         (&Method::POST, "/session/start") => handle_session_start(req, &state).await,
         (&Method::POST, "/session/end") => handle_session_end(req, &state).await,
         (&Method::POST, "/checkpoint") => handle_checkpoint(req, &state).await,
+        (&Method::POST, "/kill") => handle_kill(req, &state).await,
+        (&Method::POST, "/unkill") => handle_unkill(req, &state).await,
         _ => {
             let body = serde_json::json!({"error": "not found"}).to_string();
             Response::builder()
@@ -120,6 +129,9 @@ fn handle_status(state: &ServerState) -> Response<Full<Bytes>> {
                 "checks": s.check_count,
                 "blocks": s.block_count,
                 "warns": s.warn_count,
+                "config_hash": s.config_hash,
+                "trace_id": s.trace_id,
+                "root_span_id": s.root_span_id,
             })
         })
         .collect();
@@ -128,6 +140,12 @@ fn handle_status(state: &ServerState) -> Response<Full<Bytes>> {
         let config = state.config.blocking_read();
         config.ambient_mode.clone()
     };
+
+    let killed: Vec<String> = state
+        .killed_gates
+        .iter()
+        .map(|e| e.key().clone())
+        .collect();
 
     let body = serde_json::json!({
         "status": "running",
@@ -139,6 +157,7 @@ fn handle_status(state: &ServerState) -> Response<Full<Bytes>> {
         "sessions": active_sessions,
         "events_logged": state.event_log.events_logged(),
         "events_dropped": state.event_log.events_dropped(),
+        "killed_gates": killed,
     })
     .to_string();
 
@@ -281,6 +300,65 @@ async fn handle_post_event(
         if let Some(sid) = data.get("session_id").and_then(|v| v.as_str()) {
             let action = data.get("action").and_then(|v| v.as_str()).unwrap_or("allow");
             session::record_check(&state.sessions, sid, action);
+
+            // Accumulate check spans for OTel export at session end
+            if let Some(session) = state.sessions.get(sid) {
+                let tool = data.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                let check = data.get("check").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let us = data.get("us").and_then(|v| v.as_u64()).unwrap_or(0);
+                let pattern = data.get("pattern").and_then(|v| v.as_str());
+                let category = data
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let span = otel::build_check_span(
+                    &session.trace_id,
+                    &session.root_span_id,
+                    tool,
+                    action,
+                    check,
+                    us,
+                    pattern,
+                    category,
+                );
+                state
+                    .check_spans
+                    .entry(sid.to_string())
+                    .or_default()
+                    .push(span);
+            }
+
+            // Loop detection
+            if let Some(tool_key) = data.get("tool_key").and_then(|v| v.as_str()) {
+                let sid_str = sid.to_string();
+                state
+                    .tool_call_history
+                    .entry(sid_str.clone())
+                    .or_default()
+                    .push((tool_key.to_string(), std::time::Instant::now()));
+
+                let cfg = state.config.read().await;
+                if cfg.loop_detection.enabled {
+                    if let Some(history) = state.tool_call_history.get(&sid_str) {
+                        if let Some(warning) = crate::check::loop_detect::check_loop(
+                            &history,
+                            tool_key,
+                            cfg.loop_detection.window_secs,
+                            cfg.loop_detection.threshold,
+                        ) {
+                            drop(cfg); // release lock before publishing
+                            let warn_event = Event::new("loop_warning")
+                                .with_data(serde_json::json!({
+                                    "warning": warning,
+                                    "tool_key": tool_key,
+                                }))
+                                .with_session(sid_str);
+                            let _ = state.sse.publish(warn_event.clone());
+                            state.event_log.log(warn_event);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -352,8 +430,19 @@ async fn handle_session_start(
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let config_hash = crate::config::load_merged(Some(&cwd)).config_hash();
     let (trace_id, root_span_id) =
-        session::register(&state.sessions, session_id.clone(), cwd.clone(), repo_root.clone());
+        session::register(&state.sessions, session_id.clone(), cwd.clone(), repo_root.clone(), config_hash);
+
+    // Set cross-trace link from previous session handoff
+    if let Some(handoff) = crate::continuity::find_recent_handoff(&cwd) {
+        if let (Some(tid), Some(sid)) = (&handoff.trace_id, &handoff.root_span_id) {
+            if let Some(mut session) = state.sessions.get_mut(&session_id) {
+                session.previous_trace_id = Some(tid.clone());
+                session.previous_span_id = Some(sid.clone());
+            }
+        }
+    }
 
     info!(
         "Session registered: {session_id} (cwd: {cwd}, trace: {trace_id})"
@@ -434,12 +523,34 @@ async fn handle_session_end(
                 session_id, duration, checks, info.block_count, info.warn_count
             );
 
-            // Read outcome from handoff YAML if available
-            let outcome = crate::continuity::read_handoff(session_id)
-                .and_then(|h| h.outcome);
+            // Read outcome and token estimate from handoff YAML if available
+            let handoff = crate::continuity::read_handoff(session_id);
+            let outcome = handoff.as_ref().and_then(|h| h.outcome.clone());
+            let token_est = handoff.as_ref().and_then(|h| h.token_estimate.as_ref());
+            let ambient_mode = {
+                state.config.read().await.ambient_mode.clone()
+            };
 
-            // Build and export OTel spans
-            let spans = otel::build_session_spans(info, outcome.as_deref());
+            // Build session spans with ATSC attributes
+            let mut spans =
+                otel::build_session_spans(info, outcome.as_deref(), token_est, &ambient_mode);
+
+            // Drain accumulated check spans
+            if let Some((_, check_spans)) = state.check_spans.remove(session_id) {
+                spans.extend(check_spans);
+            }
+
+            // Add handoff span if handoff exists
+            if let Some(ref h) = handoff {
+                let token_count = h.token_estimate.as_ref().map(|t| t.total).unwrap_or(0);
+                spans.push(otel::build_handoff_span(
+                    &info.trace_id,
+                    &info.root_span_id,
+                    &h.source,
+                    token_count,
+                ));
+            }
+
             let span_count = spans.len();
             let config = state.config.read().await;
             if let Err(e) = otel::export_spans(&config.observability, spans) {
@@ -460,6 +571,10 @@ async fn handle_session_end(
             (0, 0, 0)
         }
     };
+
+    // Clean up per-session state
+    state.tool_call_history.remove(session_id);
+    state.check_spans.remove(session_id);
 
     // Emit SSE event
     let event = Event::new("session_end")
@@ -523,7 +638,15 @@ async fn handle_checkpoint(
     let cwd = &request.cwd;
 
     // Load merged config for this repo to get checkpoint settings
-    let merged = crate::config::load_merged(Some(cwd));
+    let mut merged = crate::config::load_merged(Some(cwd));
+
+    // Filter out killed gates
+    let killed: Vec<String> = state
+        .killed_gates
+        .iter()
+        .map(|e| e.key().clone())
+        .collect();
+    merged.checkpoint.gates.retain(|g| !killed.contains(g));
 
     info!(
         "Checkpoint triggered for {cwd} (gates: {:?})",
@@ -593,4 +716,123 @@ async fn handle_checkpoint(
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body)))
         .unwrap()
+}
+
+/// POST /kill — temporarily disable a checkpoint gate.
+async fn handle_kill(
+    req: Request<Incoming>,
+    state: &ServerState,
+) -> Response<Full<Bytes>> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            let body = serde_json::json!({"error": format!("read body: {e}")}).to_string();
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body)))
+                .unwrap();
+        }
+    };
+
+    let data: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            let body = serde_json::json!({"error": format!("parse: {e}")}).to_string();
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body)))
+                .unwrap();
+        }
+    };
+
+    let gate = data.get("gate").and_then(|v| v.as_str()).unwrap_or("");
+
+    if gate.is_empty() {
+        let body = serde_json::json!({"error": "missing 'gate' field"}).to_string();
+        return Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .unwrap();
+    }
+
+    // Validate gate name
+    if !crate::config::KNOWN_GATES.contains(&gate) {
+        let body = serde_json::json!({
+            "error": format!(
+                "unknown gate '{}'. Known: {}",
+                gate,
+                crate::config::KNOWN_GATES.join(", ")
+            )
+        })
+        .to_string();
+        return Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .unwrap();
+    }
+
+    state
+        .killed_gates
+        .insert(gate.to_string(), chrono::Utc::now());
+
+    info!("Gate killed: {gate}");
+
+    let body = serde_json::json!({"ok": true, "killed": gate}).to_string();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap()
+}
+
+/// POST /unkill — re-enable a killed gate (or all if no gate specified).
+async fn handle_unkill(
+    req: Request<Incoming>,
+    state: &ServerState,
+) -> Response<Full<Bytes>> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            let body = serde_json::json!({"error": format!("read body: {e}")}).to_string();
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body)))
+                .unwrap();
+        }
+    };
+
+    let data: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => serde_json::json!({}),
+    };
+
+    let gate = data.get("gate").and_then(|v| v.as_str());
+
+    match gate {
+        Some(g) => {
+            state.killed_gates.remove(g);
+            info!("Gate unkilled: {g}");
+            let body = serde_json::json!({"ok": true, "unkilled": g}).to_string();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body)))
+                .unwrap()
+        }
+        None => {
+            state.killed_gates.clear();
+            info!("All gates unkilled");
+            let body = serde_json::json!({"ok": true, "unkilled": "all"}).to_string();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body)))
+                .unwrap()
+        }
+    }
 }
