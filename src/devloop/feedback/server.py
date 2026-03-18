@@ -12,10 +12,14 @@ Run standalone:  uv run python -m devloop.feedback.server
 
 from __future__ import annotations
 
+import logging
 import subprocess
+import time
 
 from fastmcp import FastMCP
 from opentelemetry import trace
+
+logger = logging.getLogger(__name__)
 
 from devloop.feedback.types import EscalationResult, RetryPrompt, RetryResult
 from devloop.gates.server import run_all_gates
@@ -258,7 +262,12 @@ def retry_agent(
             if reason_parts:
                 span.set_attribute("retry.reason", "; ".join(reason_parts[:3]))
 
-        # 2. Re-spawn the agent in the same worktree
+        # 2. Exponential backoff before re-spawn (E-1)
+        backoff_seconds = 5 * (2 ** (attempt - 1))
+        logger.info("Retry %d: waiting %ds before re-spawn", attempt, backoff_seconds)
+        time.sleep(backoff_seconds)
+
+        # 3. Re-spawn the agent in the same worktree
         agent_result = spawn_agent(
             worktree_path=worktree_path,
             task_prompt=prompt_text,

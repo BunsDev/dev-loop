@@ -1,4 +1,6 @@
-"""Failure pattern detection — Channel 2 of the feedback loop.
+"""Failure pattern detection — standalone analysis tool (Channel 2).
+
+Not wired into real-time pipeline feedback. Invoked via ``just patterns``.
 
 Scans recent gate failures for repeated patterns and suggests harness
 tuning actions (CLAUDE.md rule changes, gate threshold adjustments).

@@ -107,7 +107,7 @@ class TestTB5Result:
 class TestLoadDependencyMap:
     """Tests for loading config/dependencies.yaml."""
 
-    @patch("devloop.feedback.pipeline._CONFIG_DIR", new_callable=lambda: MagicMock)
+    @patch("devloop.feedback.tb5_cascade._CONFIG_DIR", new_callable=lambda: MagicMock)
     def test_valid_load(self, mock_config_dir, tmp_path):
         """Loads and returns dependency list from valid YAML."""
         dep_file = tmp_path / "dependencies.yaml"
@@ -119,7 +119,7 @@ class TestLoadDependencyMap:
             '      - "src/api/**"\n'
             "    type: api-contract\n"
         )
-        with patch("devloop.feedback.pipeline._CONFIG_DIR", tmp_path):
+        with patch("devloop.feedback.tb5_cascade._CONFIG_DIR", tmp_path):
             result = _load_dependency_map()
         assert len(result) == 1
         assert result[0]["source"] == "repo-a"
@@ -129,7 +129,7 @@ class TestLoadDependencyMap:
 
     def test_missing_file(self, tmp_path):
         """Returns empty list when file doesn't exist."""
-        with patch("devloop.feedback.pipeline._CONFIG_DIR", tmp_path):
+        with patch("devloop.feedback.tb5_cascade._CONFIG_DIR", tmp_path):
             result = _load_dependency_map()
         assert result == []
 
@@ -137,7 +137,7 @@ class TestLoadDependencyMap:
         """Returns empty list when YAML lacks 'dependencies' key."""
         dep_file = tmp_path / "dependencies.yaml"
         dep_file.write_text("something_else:\n  - foo\n")
-        with patch("devloop.feedback.pipeline._CONFIG_DIR", tmp_path):
+        with patch("devloop.feedback.tb5_cascade._CONFIG_DIR", tmp_path):
             result = _load_dependency_map()
         assert result == []
 
@@ -155,7 +155,7 @@ class TestLoadDependencyMap:
             "    watches: ['lib/**']\n"
             "    type: schema\n"
         )
-        with patch("devloop.feedback.pipeline._CONFIG_DIR", tmp_path):
+        with patch("devloop.feedback.tb5_cascade._CONFIG_DIR", tmp_path):
             result = _load_dependency_map()
         assert len(result) == 2
         assert result[1]["source"] == "b"

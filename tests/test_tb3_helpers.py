@@ -70,7 +70,7 @@ class TestSeedVulnerableCode:
         # Should create src/ and put file there
         assert (worktree / "src").exists()
 
-    @patch("devloop.feedback.pipeline._FIXTURES_DIR")
+    @patch("devloop.feedback.tb3_security._FIXTURES_DIR")
     def test_returns_false_if_fixture_missing(self, mock_fixtures_dir, tmp_path):
         """Returns False when the fixture source file doesn't exist."""
         mock_fixtures_dir.__truediv__ = lambda self, key: tmp_path / "nonexistent" / key

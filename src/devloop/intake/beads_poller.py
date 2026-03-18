@@ -8,10 +8,16 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+class BeadsUnavailable(Exception):
+    """Raised when the br CLI is not installed or not functional."""
+    pass
 
 
 @dataclass
@@ -144,8 +150,20 @@ def get_issue(issue_id: str) -> WorkItem | None:
     )
 
 
-def poll_ready() -> list[WorkItem]:
-    """Poll beads for ready issues. Returns WorkItems sorted by priority."""
+def poll_ready(*, fail_on_missing: bool = False) -> list[WorkItem]:
+    """Poll beads for ready issues. Returns WorkItems sorted by priority.
+
+    Args:
+        fail_on_missing: If True, raise BeadsUnavailable when br CLI is not
+            found on PATH. If False (default), return an empty list silently.
+    """
+    br_path = shutil.which("br")
+    if br_path is None:
+        msg = "br CLI not found on PATH. Install: br upgrade"
+        logger.error(msg)
+        if fail_on_missing:
+            raise BeadsUnavailable(msg)
+        return []
     try:
         result = subprocess.run(
             ["br", "ready", "--json"],

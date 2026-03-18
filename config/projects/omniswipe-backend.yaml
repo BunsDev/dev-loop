@@ -1,0 +1,28 @@
+# Project-specific configuration for omniswipe-backend
+# Fastify + PostgreSQL + Prisma 7 API server
+
+quality_gates:
+  sanity:
+    enabled: true
+    commands: ["npm test", "npx tsc --noEmit"]
+  relevance:
+    enabled: true
+  secrets:
+    enabled: true
+  dangerous_ops:
+    enabled: true
+  security:
+    enabled: false  # Node.js — bandit is Python-only
+  review:
+    enabled: true
+    block_on: critical
+  cost:
+    enabled: true
+    ceiling_usd: 3.00
+
+tools:
+  test_runner: "npm test"
+  linter: "npx eslint"
+  type_checker: "npx tsc --noEmit"
+  formatter: "npx prettier --write"
+  package_manager: npm

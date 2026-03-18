@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from devloop.intake.beads_poller import WorkItem, claim_issue, get_issue, poll_ready
+from devloop.intake.beads_poller import BeadsUnavailable, WorkItem, claim_issue, get_issue, poll_ready
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -125,6 +125,18 @@ class TestPollReady:
         items = poll_ready()
 
         assert items == []
+
+    @patch("devloop.intake.beads_poller.shutil.which", return_value=None)
+    def test_missing_br_cli_returns_empty(self, mock_which):
+        """poll_ready() returns [] when br CLI is missing (default behavior)."""
+        items = poll_ready()
+        assert items == []
+
+    @patch("devloop.intake.beads_poller.shutil.which", return_value=None)
+    def test_missing_br_cli_raises_when_strict(self, mock_which):
+        """poll_ready() raises BeadsUnavailable when fail_on_missing=True."""
+        with pytest.raises(BeadsUnavailable, match="br CLI not found"):
+            poll_ready(fail_on_missing=True)
 
     @patch("devloop.intake.beads_poller.subprocess.run")
     def test_empty_stdout(self, mock_run):

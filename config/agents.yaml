@@ -52,3 +52,41 @@ personas:
     retry_max: 1
     model: haiku
     max_turns_default: 10
+
+  chore:
+    labels: [chore]
+    claude_md_overlay: |
+      Simple maintenance task. Minimize changes.
+    cost_ceiling_default: 0.50
+    retry_max: 1
+    model: haiku
+    max_turns_default: 5
+
+  performance:
+    labels: [performance, perf]
+    claude_md_overlay: |
+      Optimize for measurable improvement. Benchmark before and after.
+    cost_ceiling_default: 3.00
+    retry_max: 1
+    model: sonnet
+    max_turns_default: 15
+
+  infrastructure:
+    labels: [infrastructure, ci, ci-cd, devops]
+    claude_md_overlay: |
+      Changes restricted to CI/CD configs, scripts, and infrastructure.
+      Do not modify application code.
+    cost_ceiling_default: 1.00
+    retry_max: 1
+    model: sonnet
+    max_turns_default: 10
+
+  test:
+    labels: [test, testing]
+    claude_md_overlay: |
+      Focus on test creation and test infrastructure.
+      Do not change application code unless fixing a test-blocking bug.
+    cost_ceiling_default: 2.00
+    retry_max: 1
+    model: sonnet
+    max_turns_default: 15

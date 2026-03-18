@@ -1,4 +1,6 @@
-"""Step efficiency analysis — Channel 7 of the feedback loop.
+"""Step efficiency analysis — standalone analysis tool (Channel 7).
+
+Not wired into real-time pipeline feedback. Invoked via ``just efficiency``.
 
 Analyzes agent session NDJSON for wasteful patterns: re-reading the same
 files, edit-undo cycles, excessive tool calls without progress.

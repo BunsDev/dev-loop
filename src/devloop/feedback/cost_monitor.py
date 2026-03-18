@@ -1,4 +1,6 @@
-"""Cost/usage monitoring — Channel 3 of the feedback loop.
+"""Cost/usage monitoring — standalone analysis tool (Channel 3).
+
+Not wired into real-time pipeline feedback. Invoked via ``just usage``.
 
 Aggregates turn and token usage across runs and checks against budgets.
 On Claude Code Max (flat subscription), dollar cost is always $0, so this

@@ -9,7 +9,9 @@ Run standalone:  uv run python -m devloop.orchestration.server
 
 from __future__ import annotations
 
+import fcntl
 import json
+import logging
 import shutil
 import subprocess
 from datetime import UTC, datetime
@@ -18,6 +20,10 @@ from pathlib import Path
 import yaml
 from fastmcp import FastMCP
 from opentelemetry import trace
+
+logger = logging.getLogger(__name__)
+
+VALID_MODELS = {"opus", "sonnet", "haiku"}
 
 from devloop.orchestration.types import (
     ClaudeOverlay,
@@ -42,6 +48,7 @@ tracer = trace.get_tracer("orchestration", "0.1.0")
 BRANCH_PREFIX = "dl/"
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 AGENTS_CONFIG = CONFIG_DIR / "agents.yaml"
+LOCK_DIR = Path("/tmp/dev-loop/locks")
 
 # ---------------------------------------------------------------------------
 # MCP server
@@ -138,6 +145,25 @@ def setup_worktree(issue_id: str, repo_path: str) -> dict:
     ) as span:
         branch_name = f"{BRANCH_PREFIX}{issue_id}"
         worktree_path = WORKTREE_BASE / issue_id
+
+        # File-based locking to prevent concurrent processing (R-1)
+        LOCK_DIR.mkdir(parents=True, exist_ok=True)
+        lock_file = LOCK_DIR / f"{issue_id}.lock"
+        try:
+            lock_fd = open(lock_file, "w")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            error_msg = f"Issue {issue_id} is already being processed (locked)"
+            span.set_status(trace.StatusCode.ERROR, error_msg)
+            return WorktreeInfo(
+                issue_id=issue_id,
+                repo_path=repo_path,
+                worktree_path=str(worktree_path),
+                branch_name=branch_name,
+                created_at=datetime.now(UTC).isoformat(),
+                success=False,
+                message=error_msg,
+            ).model_dump()
 
         # Validate repo path
         repo = Path(repo_path).resolve()
@@ -272,7 +298,17 @@ def select_persona(labels: list[str]) -> dict:
         name, data = match
         span.set_attribute("persona.matched", True)
         span.set_attribute("persona.name", name)
-        span.set_attribute("persona.model", data.get("model", "sonnet"))
+
+        # Validate model (E-5)
+        model = data.get("model", "sonnet")
+        if model not in VALID_MODELS:
+            logger.warning(
+                "Persona '%s' has invalid model '%s', falling back to 'sonnet'",
+                name, model,
+            )
+            model = "sonnet"
+
+        span.set_attribute("persona.model", model)
         span.set_attribute("persona.cost_ceiling", data.get("cost_ceiling_default", 1.00))
 
         persona = PersonaConfig(
@@ -281,7 +317,7 @@ def select_persona(labels: list[str]) -> dict:
             claude_md_overlay=data.get("claude_md_overlay", ""),
             cost_ceiling_default=data.get("cost_ceiling_default", 1.00),
             retry_max=data.get("retry_max", 1),
-            model=data.get("model", "sonnet"),
+            model=model,
             max_turns_default=data.get("max_turns_default", 15),
         )
 
@@ -420,8 +456,12 @@ def cleanup_worktree(issue_id: str) -> dict:
         else:
             # No metadata or repo gone — force remove the directory
             if worktree_path.exists():
-                shutil.rmtree(worktree_path, ignore_errors=True)
-                worktree_removed = not worktree_path.exists()
+                try:
+                    shutil.rmtree(worktree_path)
+                    worktree_removed = True
+                except OSError as e:
+                    logger.error("Failed to remove worktree %s: %s", worktree_path, e)
+                    worktree_removed = False
 
         span.set_attribute("worktree.path", str(worktree_path))
         span.set_attribute("worktree.removed", worktree_removed)
@@ -440,6 +480,13 @@ def cleanup_worktree(issue_id: str) -> dict:
             error_msg = f"Failed to remove worktree at {worktree_path}"
             span.set_status(trace.StatusCode.ERROR, error_msg)
             message = error_msg
+
+        # Release lock file (R-1)
+        lock_file = LOCK_DIR / f"{issue_id}.lock"
+        try:
+            lock_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
         return CleanupResult(
             issue_id=issue_id,

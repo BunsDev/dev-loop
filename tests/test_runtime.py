@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from devloop.runtime.server import (
+    ClaudeCLINotFound,
     _is_claude_process,
     _parse_usage_from_output,
     _run_agent,
@@ -117,11 +118,18 @@ class TestRunAgent:
 
     @patch("devloop.runtime.server._find_claude_cli")
     def test_claude_not_found(self, mock_cli, config):
-        """FileNotFoundError raised when claude CLI not on PATH."""
-        mock_cli.side_effect = FileNotFoundError("claude CLI not found")
+        """ClaudeCLINotFound raised when claude CLI not on PATH."""
+        mock_cli.side_effect = ClaudeCLINotFound("claude CLI not found")
 
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(ClaudeCLINotFound):
             _run_agent(config)
+
+    @patch("devloop.runtime.server.shutil.which", return_value=None)
+    def test_find_claude_cli_raises_custom_error(self, mock_which):
+        """_find_claude_cli raises ClaudeCLINotFound, not FileNotFoundError."""
+        from devloop.runtime.server import _find_claude_cli
+        with pytest.raises(ClaudeCLINotFound, match="claude CLI not found"):
+            _find_claude_cli()
 
 
 # ---------------------------------------------------------------------------

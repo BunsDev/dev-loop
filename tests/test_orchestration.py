@@ -29,7 +29,8 @@ class TestLoadAgentsConfig:
         """The loaded config contains all expected persona names."""
         config = _load_agents_config()
         personas = config["personas"]
-        expected = {"bug-fix", "feature", "refactor", "security-fix", "docs"}
+        expected = {"bug-fix", "feature", "refactor", "security-fix", "docs",
+                    "chore", "performance", "infrastructure", "test"}
         assert set(personas.keys()) == expected
 
     def test_each_persona_has_labels(self):
@@ -153,3 +154,121 @@ class TestSelectPersonaMaxTurns:
         """Security-fix persona returns max_turns_default=15."""
         result = select_persona(["security"])
         assert result["max_turns_default"] == 15
+
+    def test_chore_returns_haiku_model(self):
+        """Chore persona returns model=haiku, max_turns_default=5."""
+        result = select_persona(["chore"])
+        assert result["model"] == "haiku"
+        assert result["max_turns_default"] == 5
+
+    def test_infrastructure_returns_sonnet(self):
+        """Infrastructure persona returns model=sonnet."""
+        result = select_persona(["infrastructure"])
+        assert result["model"] == "sonnet"
+        assert result["max_turns_default"] == 10
+
+    def test_test_persona_returns_sonnet(self):
+        """Test persona returns model=sonnet, max_turns_default=15."""
+        result = select_persona(["test"])
+        assert result["model"] == "sonnet"
+        assert result["max_turns_default"] == 15
+
+    def test_performance_persona_returns_sonnet(self):
+        """Performance persona returns model=sonnet."""
+        result = select_persona(["performance"])
+        assert result["model"] == "sonnet"
+
+
+# ---------------------------------------------------------------------------
+# Model validation tests (E-5)
+# ---------------------------------------------------------------------------
+
+
+class TestModelValidation:
+    """Tests for persona model validation — invalid models fall back to sonnet."""
+
+    def test_invalid_model_falls_back_to_sonnet(self, tmp_path):
+        """Persona with invalid model gets corrected to sonnet."""
+        import yaml
+
+        # Load real config and add a persona with invalid model
+        config = _load_agents_config()
+        config["personas"]["test-invalid"] = {
+            "labels": ["test-invalid-label"],
+            "claude_md_overlay": "Test",
+            "cost_ceiling_default": 1.00,
+            "retry_max": 1,
+            "model": "gpt-4o",  # Invalid
+            "max_turns_default": 10,
+        }
+
+        # Write modified config to temp file and patch
+        temp_config = tmp_path / "agents.yaml"
+        with open(temp_config, "w") as f:
+            yaml.dump(config, f)
+
+        from unittest.mock import patch
+        with patch("devloop.orchestration.server.AGENTS_CONFIG", temp_config):
+            result = select_persona(["test-invalid-label"])
+            assert result["model"] == "sonnet"  # Fell back from gpt-4o
+
+
+# ---------------------------------------------------------------------------
+# build_claude_md_overlay tests (T-4)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildClaudeMdOverlay:
+    """Tests for build_claude_md_overlay() — overlay text generation."""
+
+    def test_overlay_contains_persona_instructions(self):
+        """Overlay text includes persona overlay from config."""
+        from devloop.orchestration.server import build_claude_md_overlay
+
+        result = build_claude_md_overlay(
+            persona="bug-fix",
+            issue_title="Fix login crash",
+            issue_description="Login crashes on empty password",
+        )
+        overlay = result["overlay_text"]
+        assert "Focus on minimal fix" in overlay
+
+    def test_overlay_contains_issue_context(self):
+        """Overlay text includes issue title and description."""
+        from devloop.orchestration.server import build_claude_md_overlay
+
+        result = build_claude_md_overlay(
+            persona="feature",
+            issue_title="Add search feature",
+            issue_description="Implement full-text search",
+        )
+        overlay = result["overlay_text"]
+        assert "Add search feature" in overlay
+        assert "full-text search" in overlay
+
+    def test_overlay_structure(self):
+        """Overlay has expected sections: heading, issue, persona, rules."""
+        from devloop.orchestration.server import build_claude_md_overlay
+
+        result = build_claude_md_overlay(
+            persona="refactor",
+            issue_title="Refactor auth module",
+            issue_description="Split auth into separate files",
+        )
+        overlay = result["overlay_text"]
+        assert "# Dev-Loop Agent Instructions" in overlay
+        assert "## Issue:" in overlay
+        assert "## Rules" in overlay
+
+    def test_overlay_includes_deny_rules(self):
+        """Overlay includes deny list rules section."""
+        from devloop.orchestration.server import build_claude_md_overlay
+
+        result = build_claude_md_overlay(
+            persona="bug-fix",
+            issue_title="Test",
+            issue_description="Test description",
+        )
+        # The overlay should reference denied file patterns
+        overlay = result["overlay_text"]
+        assert "NEVER" in overlay or "deny" in overlay.lower() or "Do not" in overlay

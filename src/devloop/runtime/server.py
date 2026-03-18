@@ -65,13 +65,18 @@ DEFAULT_COST_CEILING = 2.0
 # ---------------------------------------------------------------------------
 
 
+class ClaudeCLINotFound(RuntimeError):
+    """Raised when the claude CLI binary is not on PATH."""
+    pass
+
+
 def _find_claude_cli() -> str:
     """Locate the claude CLI on PATH, raising if not found."""
     path = shutil.which("claude")
     if path is None:
-        raise FileNotFoundError(
-            "claude CLI not found on PATH. "
-            "Install it: https://docs.anthropic.com/en/docs/claude-code"
+        raise ClaudeCLINotFound(
+            "claude CLI not found on PATH.\n"
+            "Install: https://docs.anthropic.com/en/docs/claude-code"
         )
     return path
 
@@ -282,7 +287,7 @@ def spawn_agent(
 
         try:
             result = _run_agent(config)
-        except FileNotFoundError as exc:
+        except (ClaudeCLINotFound, FileNotFoundError) as exc:
             error_msg = str(exc)
             span.set_status(trace.StatusCode.ERROR, error_msg)
             return AgentResult(

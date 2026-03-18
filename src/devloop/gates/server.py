@@ -40,6 +40,31 @@ from devloop.gates.types import Finding, GateResult, GateSuiteResult
 tracer = trace.get_tracer("gates", "0.1.0")
 
 # ---------------------------------------------------------------------------
+# Worktree validation helper (E-6)
+# ---------------------------------------------------------------------------
+
+
+def _verify_worktree(worktree_path: str, gate_name: str) -> dict | None:
+    """Returns GateResult error dict if worktree is invalid, None if OK."""
+    wt = Path(worktree_path)
+    if not wt.is_dir():
+        return GateResult(
+            gate_name=gate_name,
+            passed=False,
+            findings=[Finding(severity="critical", message=f"Worktree not found: {wt}")],
+            error=f"Worktree not found: {wt}",
+        ).model_dump()
+    if not (wt / ".git").exists():
+        return GateResult(
+            gate_name=gate_name,
+            passed=False,
+            findings=[Finding(severity="critical", message=f"Worktree is not a git repo: {wt}")],
+            error=f"Not a git repository: {wt}",
+        ).model_dump()
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
@@ -380,6 +405,8 @@ def run_gate_05_relevance(
     worktree_path: str,
     issue_title: str,
     issue_description: str,
+    *,
+    strict: bool = False,
 ) -> dict:
     """Check that the diff is relevant to the issue being worked on."""
     with tracer.start_as_current_span(
@@ -483,18 +510,33 @@ def run_gate_05_relevance(
                 )
             )
         else:
-            # Soft gate: pass with a warning
-            findings.append(
-                Finding(
-                    severity="warning",
-                    message=(
-                        f"No issue keywords found in diff content or filenames. "
-                        f"Keywords checked: {', '.join(sorted(keywords)[:15])}. "
-                        f"Changed files: {changed_files[:200]}. "
-                        f"This may indicate the diff is unrelated to the issue."
-                    ),
+            if strict:
+                # Strict mode: zero overlap = fail
+                passed = False
+                findings.append(
+                    Finding(
+                        severity="critical",
+                        message=(
+                            f"No issue keywords found in diff (strict mode). "
+                            f"Keywords checked: {', '.join(sorted(keywords)[:15])}. "
+                            f"Changed files: {changed_files[:200]}. "
+                            f"The diff appears unrelated to the issue."
+                        ),
+                    )
                 )
-            )
+            else:
+                # Soft gate: pass with a warning
+                findings.append(
+                    Finding(
+                        severity="warning",
+                        message=(
+                            f"No issue keywords found in diff content or filenames. "
+                            f"Keywords checked: {', '.join(sorted(keywords)[:15])}. "
+                            f"Changed files: {changed_files[:200]}. "
+                            f"This may indicate the diff is unrelated to the issue."
+                        ),
+                    )
+                )
 
         elapsed = time.monotonic() - start
         span.set_attribute("gate.status", "pass" if passed else "fail")
@@ -877,7 +919,7 @@ def run_gate_25_dangerous_ops(worktree_path: str) -> dict:
     ),
     tags={"gates", "security"},
 )
-def run_gate_3_security(worktree_path: str) -> dict:
+def run_gate_3_security(worktree_path: str, *, fail_on_missing_tool: bool = False) -> dict:
     """Run SAST security scan on the worktree."""
     with tracer.start_as_current_span(
         "gates.gate_3_security",
@@ -925,6 +967,21 @@ def run_gate_3_security(worktree_path: str) -> dict:
         bandit_bin = _find_bandit()
         if bandit_bin is None:
             elapsed = time.monotonic() - start
+            if fail_on_missing_tool:
+                span.set_attribute("gate.status", "fail")
+                span.set_status(trace.StatusCode.ERROR, "bandit not installed")
+                return GateResult(
+                    gate_name="gate_3_security",
+                    passed=False,
+                    findings=[
+                        Finding(
+                            severity="critical",
+                            message="bandit not installed — required for security scan",
+                        )
+                    ],
+                    duration_seconds=round(elapsed, 3),
+                    error="Required tool 'bandit' not found",
+                ).model_dump()
             span.set_attribute("gate.status", "skipped")
             span.set_attribute("status.detail", "Skipped — bandit not installed")
             span.set_status(trace.StatusCode.OK)

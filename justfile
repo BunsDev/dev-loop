@@ -29,7 +29,12 @@ stack-down:
 stack-health:
     @echo "=== OpenObserve ===" && curl -s http://localhost:5080/healthz && echo
     @echo "=== Beads ===" && br stats --quiet 2>/dev/null && echo "  OK" || echo "  NOT INITIALIZED"
-    @echo "=== Anthropic API ===" && echo "TODO: verify Anthropic API key"
+    @echo "=== Anthropic API ===" && \
+        if [ -z "${ANTHROPIC_API_KEY:-}" ]; then \
+            echo "  NOT SET (ANTHROPIC_API_KEY empty)"; \
+        else \
+            echo "  Key present (${#ANTHROPIC_API_KEY} chars)"; \
+        fi
 
 # Import dashboards and alerts into OpenObserve
 stack-import:
@@ -132,10 +137,24 @@ tb6-replay SESSION_ID:
 stress *ARGS:
     uv run python scripts/stress-test.py {{ARGS}}
 
-# Run all passing tracer bullets
+# Run all passing tracer bullets (using fixtures)
 tb-all:
-    @echo "Running all tracer bullets..."
-    @echo "TODO: run only TBs that have been implemented"
+    @echo "Running all tracer bullets with fixtures..."
+    just tb1-mock test-fixtures/tickets/tb1-sample.yaml
+    just tb1-mock test-fixtures/tickets/tb2-failure.yaml
+    just tb1-mock test-fixtures/tickets/tb3-vulnerability.yaml
+
+# Run full smoke suite (all test tiers)
+smoke:
+    @echo "=== Rust tests ==="
+    cd daemon && cargo test --quiet
+    @echo "=== Python tests ==="
+    uv run pytest tests/ -q --ignore=tests/replay
+    @echo "=== Conformance ==="
+    uv run python scripts/conformance/run_conformance.py tests/conformance/pre_tool_use.yaml tests/conformance/post_tool_use.yaml
+    @echo "=== Tier 2 ==="
+    uv run pytest tests/tier2/ -q
+    @echo "=== All smoke passed ==="
 
 # ─── Feedback Channels ───
 
@@ -157,15 +176,14 @@ efficiency SESSION_ID:
 
 # ─── Scoring ───
 
-# Evaluate all tools against scoring rubric
+# Evaluate all tools against scoring rubric (uses feedback score data)
 score:
-    @echo "Tool scoring not yet implemented"
-    @echo "See docs/scoring-rubric.md for rubric"
+    uv run python scripts/feedback/score.py
 
 # Score a specific tool
 score-tool TOOL:
     @echo "Scoring tool: {{TOOL}}"
-    @echo "TODO: implement interactive scoring"
+    uv run python scripts/feedback/score.py --tool "{{TOOL}}"
 
 # ─── Safety ───
 
@@ -204,25 +222,56 @@ recover:
 
 # Clean up orphaned worktrees older than 24h
 worktree-gc:
-    @echo "Scanning for orphaned worktrees..."
-    @find /tmp/dev-loop/worktrees -maxdepth 1 -mmin +1440 -type d 2>/dev/null || echo "  No orphans found"
-    @echo "TODO: prompt before deletion, check for uncommitted work"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Scanning for orphaned worktrees..."
+    orphans=$(find /tmp/dev-loop/worktrees -maxdepth 1 -mmin +1440 -type d 2>/dev/null || true)
+    if [ -z "$orphans" ]; then
+        echo "  No orphans found"
+        exit 0
+    fi
+    for wt in $orphans; do
+        # Check for uncommitted work
+        if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
+            changes=$(cd "$wt" && git status --porcelain 2>/dev/null | wc -l || echo "0")
+            if [ "$changes" -gt 0 ]; then
+                echo "  SKIP $wt ($changes uncommitted changes)"
+                continue
+            fi
+        fi
+        echo "  DELETE $wt"
+        rm -rf "$wt"
+    done
+    echo "Done."
 
 # ─── Utilities ───
 
 # Bypass beads — run agent directly on a repo
 run-direct REPO TASK:
     @echo "Direct run on {{REPO}}: {{TASK}}"
-    @echo "TODO: implement direct agent spawn"
+    uv run python -c "from devloop.runtime.server import spawn_agent; import json; print(json.dumps(spawn_agent('{{REPO}}', '{{TASK}}'), indent=2))"
 
 # Run TB-1 with mock intake (beads fixture)
 tb1-mock FIXTURE="test-fixtures/tickets/tb1-sample.yaml":
     @echo "Running TB-1 with mock intake: {{FIXTURE}}"
-    @echo "TODO: load ticket from YAML fixture, create beads issue, run pipeline"
+    uv run python -m devloop.cli tb1-mock {{FIXTURE}}
 
 # List all agent sessions
 sessions-list *ARGS:
-    @echo "TODO: integrate with AgentLens"
+    #!/usr/bin/env bash
+    sessions_dir="${HOME}/.local/share/dev-loop/sessions"
+    if [ ! -d "$sessions_dir" ]; then
+        sessions_dir="/tmp/dev-loop/sessions"
+    fi
+    if [ ! -d "$sessions_dir" ]; then
+        echo "No sessions directory found"
+        exit 0
+    fi
+    echo "Sessions in $sessions_dir:"
+    for f in "$sessions_dir"/*.yaml "$sessions_dir"/*.json; do
+        [ -f "$f" ] || continue
+        echo "  $(basename "$f")  $(stat -c '%y' "$f" 2>/dev/null | cut -d. -f1)"
+    done
 
 # View project status
 status:

@@ -1,4 +1,6 @@
-"""Changelog generation — Channel 5 of the feedback loop.
+"""Changelog generation — standalone analysis tool (Channel 5).
+
+Not wired into real-time pipeline feedback. Invoked via ``just changelog``.
 
 Accumulates completed issues and generates changelogs grouped by repo
 and issue type. Uses beads (br) data + session metadata.

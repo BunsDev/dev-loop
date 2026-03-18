@@ -219,7 +219,7 @@ class TestSaveSession:
     """Tests for session file persistence."""
 
     def test_creates_files(self, tmp_path):
-        with patch("devloop.feedback.pipeline._SESSIONS_DIR", tmp_path):
+        with patch("devloop.feedback.tb6_replay._SESSIONS_DIR", tmp_path):
             path = _save_session(
                 "dl-test-123",
                 '{"type": "result"}\n',
@@ -230,7 +230,7 @@ class TestSaveSession:
         assert path == str(tmp_path / "dl-test-123.ndjson")
 
     def test_metadata_correct(self, tmp_path):
-        with patch("devloop.feedback.pipeline._SESSIONS_DIR", tmp_path):
+        with patch("devloop.feedback.tb6_replay._SESSIONS_DIR", tmp_path):
             _save_session(
                 "dl-test-456",
                 "",
@@ -242,7 +242,7 @@ class TestSaveSession:
 
     def test_creates_directory(self, tmp_path):
         sessions_dir = tmp_path / "nested" / "sessions"
-        with patch("devloop.feedback.pipeline._SESSIONS_DIR", sessions_dir):
+        with patch("devloop.feedback.tb6_replay._SESSIONS_DIR", sessions_dir):
             _save_session("dl-test-789", "data", {})
         assert sessions_dir.exists()
 
@@ -253,21 +253,21 @@ class TestLoadSession:
     def test_loads_events_and_metadata(self, tmp_path):
         (tmp_path / "dl-s1.ndjson").write_text('{"type": "result", "num_turns": 3}\n')
         (tmp_path / "dl-s1.meta.json").write_text('{"issue_id": "dl-s1"}')
-        with patch("devloop.feedback.pipeline._SESSIONS_DIR", tmp_path):
+        with patch("devloop.feedback.tb6_replay._SESSIONS_DIR", tmp_path):
             result = _load_session("dl-s1")
         assert result["session_id"] == "dl-s1"
         assert len(result["events"]) == 1
         assert result["metadata"]["issue_id"] == "dl-s1"
 
     def test_missing_file_raises(self, tmp_path):
-        with patch("devloop.feedback.pipeline._SESSIONS_DIR", tmp_path):
+        with patch("devloop.feedback.tb6_replay._SESSIONS_DIR", tmp_path):
             with pytest.raises(FileNotFoundError):
                 _load_session("nonexistent")
 
     def test_missing_metadata_ok(self, tmp_path):
         (tmp_path / "dl-s2.ndjson").write_text('{"type": "result"}\n')
         # No .meta.json file
-        with patch("devloop.feedback.pipeline._SESSIONS_DIR", tmp_path):
+        with patch("devloop.feedback.tb6_replay._SESSIONS_DIR", tmp_path):
             result = _load_session("dl-s2")
         assert result["metadata"] == {}
         assert len(result["events"]) == 1
@@ -366,7 +366,7 @@ class TestGenerateSessionId:
         ts_part = sid.split("-", 2)[-1]
         assert ts_part.isdigit()
 
-    @patch("devloop.feedback.pipeline.time")
+    @patch("devloop.feedback.tb6_replay.time")
     def test_uniqueness(self, mock_time):
         """Different timestamps produce different session IDs."""
         mock_time.time.side_effect = [1000000, 1000001]
