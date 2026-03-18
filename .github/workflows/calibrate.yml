@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: uv sync
       - name: Run tests
-        run: uv run pytest tests/ -q --ignore=tests/replay
+        run: uv run pytest tests/ -q
 
   conformance:
     name: Conformance Tests
@@ -46,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: uv sync
       - name: Install dl
-        run: cp daemon/target/release/dl ~/.local/bin/dl && echo "$HOME/.local/bin" >> $GITHUB_PATH
+        run: mkdir -p ~/.local/bin && cp daemon/target/release/dl ~/.local/bin/dl && echo "$HOME/.local/bin" >> $GITHUB_PATH
       - name: Run conformance
         run: uv run python scripts/conformance/run_conformance.py tests/conformance/pre_tool_use.yaml tests/conformance/post_tool_use.yaml
 

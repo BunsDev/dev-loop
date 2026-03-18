@@ -1065,6 +1065,12 @@ checkpoint:
                 openobserve_user: "admin".into(),
                 ..Default::default()
             },
+            // Use only gates that don't require external tools,
+            // so the test passes in CI environments.
+            checkpoint: CheckpointConfig {
+                gates: vec!["sanity".into()],
+                ..Default::default()
+            },
             ..Default::default()
         };
         let merged = merge(&global, None);

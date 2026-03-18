@@ -11,8 +11,9 @@ class TestTB1GoldenPath:
     """Tests for run_tb1() — mocked at every layer boundary."""
 
     @patch("devloop.feedback.tb1_golden_path.init_tracing", return_value=MagicMock())
+    @patch("devloop.feedback.tb1_golden_path.poll_ready", return_value=[])
     @patch("devloop.feedback.tb1_golden_path.get_issue")
-    def test_issue_not_found_returns_error(self, mock_get, mock_tracing):
+    def test_issue_not_found_returns_error(self, mock_get, mock_poll, mock_tracing):
         """run_tb1 returns error when issue can't be fetched."""
         from devloop.feedback.tb1_golden_path import run_tb1
 

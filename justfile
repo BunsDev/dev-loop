@@ -149,7 +149,7 @@ smoke:
     @echo "=== Rust tests ==="
     cd daemon && cargo test --quiet
     @echo "=== Python tests ==="
-    uv run pytest tests/ -q --ignore=tests/replay
+    uv run pytest tests/ -q
     @echo "=== Conformance ==="
     uv run python scripts/conformance/run_conformance.py tests/conformance/pre_tool_use.yaml tests/conformance/post_tool_use.yaml
     @echo "=== Tier 2 ==="

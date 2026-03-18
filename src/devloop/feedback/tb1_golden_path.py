@@ -119,9 +119,20 @@ def run_tb1(issue_id: str, repo_path: str) -> dict:
                     poll_span.set_attribute("tb1.issue_found_in_poll", False)
                     issue = get_issue(issue_id)
                 if issue is None:
-                    issue_title = issue_id
-                    issue_description = ""
-                    issue_labels: list[str] = []
+                    elapsed = time.monotonic() - pipeline_start
+                    poll_span.set_status(
+                        trace.StatusCode.ERROR,
+                        f"Issue {issue_id} not found",
+                    )
+                    root_span.set_status(trace.StatusCode.ERROR, "Issue not found")
+                    return TB1Result(
+                        issue_id=issue_id,
+                        repo_path=repo_path,
+                        success=False,
+                        phase="poll",
+                        error=f"Issue {issue_id} not found in beads",
+                        duration_seconds=round(elapsed, 2),
+                    ).model_dump()
                 else:
                     poll_span.set_attribute("tb1.issue_found_in_poll", True)
                     issue_title = issue.title

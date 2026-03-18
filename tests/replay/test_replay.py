@@ -7,17 +7,27 @@ import tempfile
 
 import pytest
 
-# Add scripts to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "replay"))
+# Import from scripts/replay/ explicitly to avoid collision with scripts/feedback/score.py
+import importlib.util
 
-from parse_sessions import parse_session, CHECKABLE_TOOLS
-from score import (
-    compute_precision_recall,
-    analyze_unlabeled,
-    compare_baseline,
-    is_sensitive_file,
-    is_known_fp,
-)
+_replay_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "replay"))
+
+def _import_from_replay(module_name: str):
+    spec = importlib.util.spec_from_file_location(module_name, os.path.join(_replay_dir, f"{module_name}.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+_parse_sessions = _import_from_replay("parse_sessions")
+_score = _import_from_replay("score")
+
+parse_session = _parse_sessions.parse_session
+CHECKABLE_TOOLS = _parse_sessions.CHECKABLE_TOOLS
+compute_precision_recall = _score.compute_precision_recall
+analyze_unlabeled = _score.analyze_unlabeled
+compare_baseline = _score.compare_baseline
+is_sensitive_file = _score.is_sensitive_file
+is_known_fp = _score.is_known_fp
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

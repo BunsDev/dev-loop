@@ -49,8 +49,9 @@ def sample_issues():
 class TestPollReady:
     """Tests for poll_ready() function."""
 
+    @patch("devloop.intake.beads_poller.shutil.which", return_value="/usr/bin/br")
     @patch("devloop.intake.beads_poller.subprocess.run")
-    def test_valid_json(self, mock_run, sample_issues):
+    def test_valid_json(self, mock_run, mock_which, sample_issues):
         """poll_ready() with valid JSON from br ready --json returns WorkItems."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=["br", "ready", "--json"],
@@ -72,8 +73,9 @@ class TestPollReady:
         assert items[1].id == "ISSUE-2"
         assert items[1].parent == "EPIC-1"
 
+    @patch("devloop.intake.beads_poller.shutil.which", return_value="/usr/bin/br")
     @patch("devloop.intake.beads_poller.subprocess.run")
-    def test_empty_json_array(self, mock_run):
+    def test_empty_json_array(self, mock_run, mock_which):
         """poll_ready() with empty JSON array returns empty list."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=["br", "ready", "--json"],
@@ -86,8 +88,9 @@ class TestPollReady:
 
         assert items == []
 
+    @patch("devloop.intake.beads_poller.shutil.which", return_value="/usr/bin/br")
     @patch("devloop.intake.beads_poller.subprocess.run")
-    def test_nonzero_exit_code(self, mock_run):
+    def test_nonzero_exit_code(self, mock_run, mock_which):
         """poll_ready() with br returning non-zero exit code returns []."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=["br", "ready", "--json"],
@@ -100,8 +103,9 @@ class TestPollReady:
 
         assert items == []
 
+    @patch("devloop.intake.beads_poller.shutil.which", return_value="/usr/bin/br")
     @patch("devloop.intake.beads_poller.subprocess.run")
-    def test_timeout_expired(self, mock_run):
+    def test_timeout_expired(self, mock_run, mock_which):
         """poll_ready() with subprocess.TimeoutExpired returns []."""
         mock_run.side_effect = subprocess.TimeoutExpired(
             cmd=["br", "ready", "--json"],
@@ -112,8 +116,9 @@ class TestPollReady:
 
         assert items == []
 
+    @patch("devloop.intake.beads_poller.shutil.which", return_value="/usr/bin/br")
     @patch("devloop.intake.beads_poller.subprocess.run")
-    def test_invalid_json(self, mock_run):
+    def test_invalid_json(self, mock_run, mock_which):
         """poll_ready() with unparseable JSON returns [] instead of crashing."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=["br", "ready", "--json"],
@@ -138,8 +143,9 @@ class TestPollReady:
         with pytest.raises(BeadsUnavailable, match="br CLI not found"):
             poll_ready(fail_on_missing=True)
 
+    @patch("devloop.intake.beads_poller.shutil.which", return_value="/usr/bin/br")
     @patch("devloop.intake.beads_poller.subprocess.run")
-    def test_empty_stdout(self, mock_run):
+    def test_empty_stdout(self, mock_run, mock_which):
         """poll_ready() with empty stdout returns [] instead of crashing."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=["br", "ready", "--json"],
