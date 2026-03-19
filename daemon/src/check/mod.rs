@@ -31,7 +31,7 @@ impl CheckEngine {
     /// Build from merged config: applies extra/remove/allow overrides.
     pub fn from_config(config: &MergedConfig) -> Self {
         Self {
-            deny_list: DenyList::from_config(&config.deny_list_extra, &config.deny_list_remove),
+            deny_list: DenyList::from_config(&config.deny_list_extra, &config.deny_list_remove, &config.deny_list_allow),
             dangerous_ops: DangerousOps::from_config(
                 &config.dangerous_ops_extra,
                 &config.dangerous_ops_allow,

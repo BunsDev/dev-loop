@@ -4,6 +4,8 @@ deny_list:
   # Source code files that match *secret* pattern — not actual secrets
   remove_patterns: ["*secret*"]
   extra_patterns: []
+  # Allow .env.example files (documentation templates, not real secrets)
+  allow_patterns: [".env.example*"]
 
 dangerous_ops:
   allow_patterns:

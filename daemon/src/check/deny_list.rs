@@ -5,9 +5,10 @@
 /// patterns like `.aws/*` catch paths like `home/user/.aws/credentials`.
 use glob::Pattern;
 
-/// Pre-compiled deny patterns.
+/// Pre-compiled deny patterns with optional allow overrides.
 pub struct DenyList {
     patterns: Vec<(String, Pattern)>,
+    allow_patterns: Vec<Pattern>,
 }
 
 pub const BUILTIN_DENY_PATTERNS: &[&str] = &[
@@ -37,14 +38,15 @@ pub const BUILTIN_DENY_PATTERNS: &[&str] = &[
 impl DenyList {
     /// Build the default deny list from the hardcoded patterns.
     pub fn default_patterns() -> Self {
-        Self::compile(BUILTIN_DENY_PATTERNS.iter().map(|s| s.to_string()).collect())
+        Self::compile(BUILTIN_DENY_PATTERNS.iter().map(|s| s.to_string()).collect(), &[])
     }
 
     /// Build a deny list with config overrides applied.
     ///
     /// - `extra`: additional glob patterns to deny
     /// - `remove`: built-in patterns to remove (exact match on pattern string)
-    pub fn from_config(extra: &[String], remove: &[String]) -> Self {
+    /// - `allow`: glob patterns that override deny (e.g. `.env.example*`)
+    pub fn from_config(extra: &[String], remove: &[String], allow: &[String]) -> Self {
         let mut patterns: Vec<String> = BUILTIN_DENY_PATTERNS
             .iter()
             .map(|s| s.to_string())
@@ -57,16 +59,35 @@ impl DenyList {
             }
         }
 
-        Self::compile(patterns)
+        Self::compile(patterns, allow)
     }
 
-    fn compile(raw: Vec<String>) -> Self {
+    fn compile(raw: Vec<String>, allow: &[String]) -> Self {
         let patterns = raw
             .into_iter()
             .filter_map(|p| Pattern::new(&p).ok().map(|compiled| (p, compiled)))
             .collect();
 
-        Self { patterns }
+        let allow_patterns = allow
+            .iter()
+            .filter_map(|p| Pattern::new(p).ok())
+            .collect();
+
+        Self { patterns, allow_patterns }
+    }
+
+    /// Check if a path matches any allow pattern (overrides deny).
+    fn is_allowed(&self, path: &str) -> bool {
+        if self.allow_patterns.is_empty() {
+            return false;
+        }
+        let basename = path.rsplit('/').next().unwrap_or(path);
+        for pattern in &self.allow_patterns {
+            if pattern.matches(path) || pattern.matches(basename) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Check if a file path matches any denied pattern.
@@ -76,12 +97,16 @@ impl DenyList {
         // Normalize: strip leading slashes for relative matching
         let path = path.strip_prefix('/').unwrap_or(path);
 
+        // Allow patterns override deny patterns
+        if self.is_allowed(path) {
+            return None;
+        }
+
         for (raw, pattern) in &self.patterns {
             // Match against the full path
             if pattern.matches(path) {
                 return Some(DenyMatch {
                     pattern: raw.clone(),
-                    matched_on: path.to_string(),
                 });
             }
 
@@ -90,7 +115,6 @@ impl DenyList {
                 if pattern.matches(basename) {
                     return Some(DenyMatch {
                         pattern: raw.clone(),
-                        matched_on: basename.to_string(),
                     });
                 }
             }
@@ -104,7 +128,6 @@ impl DenyList {
                 if pattern.matches(&sub) {
                     return Some(DenyMatch {
                         pattern: raw.clone(),
-                        matched_on: sub,
                     });
                 }
             }
@@ -117,7 +140,6 @@ impl DenyList {
 #[derive(Debug, Clone)]
 pub struct DenyMatch {
     pub pattern: String,
-    pub matched_on: String,
 }
 
 #[cfg(test)]
@@ -176,7 +198,7 @@ mod tests {
 
     #[test]
     fn from_config_extra_patterns() {
-        let dl = DenyList::from_config(&["*.vault".to_string()], &[]);
+        let dl = DenyList::from_config(&["*.vault".to_string()], &[], &[]);
         assert!(dl.check("secrets.vault").is_some());
         // Built-in still works
         assert!(dl.check(".env").is_some());
@@ -184,7 +206,7 @@ mod tests {
 
     #[test]
     fn from_config_remove_patterns() {
-        let dl = DenyList::from_config(&[], &[".npmrc".to_string()]);
+        let dl = DenyList::from_config(&[], &[".npmrc".to_string()], &[]);
         // Removed pattern no longer blocks
         assert!(dl.check(".npmrc").is_none());
         // Other built-ins still work
@@ -197,11 +219,24 @@ mod tests {
         let dl = DenyList::from_config(
             &["*.vault".to_string()],
             &[".npmrc".to_string(), ".pypirc".to_string()],
+            &[],
         );
         assert!(dl.check("secrets.vault").is_some());
         assert!(dl.check(".npmrc").is_none());
         assert!(dl.check(".pypirc").is_none());
         assert!(dl.check(".env").is_some());
+    }
+
+    #[test]
+    fn from_config_allow_patterns() {
+        let dl = DenyList::from_config(&[], &[], &[".env.example*".to_string()]);
+        // Allow overrides deny
+        assert!(dl.check("docs/.env.example.md").is_none());
+        assert!(dl.check(".env.example").is_none());
+        // Non-example .env files still blocked
+        assert!(dl.check(".env").is_some());
+        assert!(dl.check(".env.local").is_some());
+        assert!(dl.check(".env.production").is_some());
     }
 
     #[test]
@@ -242,7 +277,7 @@ mod proptests {
         ) {
             let removed = BUILTIN_DENY_PATTERNS[remove_idx].to_string();
             let dl_full = DenyList::default_patterns();
-            let dl_reduced = DenyList::from_config(&[], &[removed.clone()]);
+            let dl_reduced = DenyList::from_config(&[], &[removed.clone()], &[]);
 
             let full_result = dl_full.check(&path);
             let reduced_result = dl_reduced.check(&path);
@@ -261,7 +296,7 @@ mod proptests {
             path in "[a-zA-Z0-9_./\\-]{1,100}"
         ) {
             let dl_base = DenyList::default_patterns();
-            let dl_extra = DenyList::from_config(&[extra], &[]);
+            let dl_extra = DenyList::from_config(&[extra], &[], &[]);
 
             let base_result = dl_base.check(&path);
             let extra_result = dl_extra.check(&path);

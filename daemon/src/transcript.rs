@@ -10,10 +10,6 @@
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-/// Default context window size for estimation (tokens).
-/// Used only as fallback when no config is available.
-pub const DEFAULT_CONTEXT_LIMIT: u64 = 200_000;
-
 /// Summary extracted from a transcript.
 #[derive(Debug, Default)]
 pub struct TranscriptSummary {
@@ -30,10 +26,6 @@ pub struct TranscriptSummary {
 impl TranscriptSummary {
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens + self.output_tokens
-    }
-
-    pub fn context_pct(&self) -> f32 {
-        self.context_pct_with_limit(DEFAULT_CONTEXT_LIMIT)
     }
 
     pub fn context_pct_with_limit(&self, limit: u64) -> f32 {
@@ -293,7 +285,7 @@ mod tests {
         // ~1000 bytes → ~143 tokens → 0.07% of 200K
         std::fs::write(&path, "x".repeat(1000)).unwrap();
 
-        let (pct, exceeds) = check_context_threshold(&path, 0.85, DEFAULT_CONTEXT_LIMIT);
+        let (pct, exceeds) = check_context_threshold(&path, 0.85, 200_000);
         assert!(!exceeds);
         assert!(pct < 0.01);
     }
@@ -306,7 +298,7 @@ mod tests {
         // size > 1_190_000
         std::fs::write(&path, "x".repeat(1_400_000)).unwrap();
 
-        let (pct, exceeds) = check_context_threshold(&path, 0.85, DEFAULT_CONTEXT_LIMIT);
+        let (pct, exceeds) = check_context_threshold(&path, 0.85, 200_000);
         assert!(exceeds);
         assert!(pct > 0.85);
     }
@@ -426,7 +418,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(summary.total_tokens(), 150_000);
-        assert!((summary.context_pct() - 0.75).abs() < 0.01);
+        assert!((summary.context_pct_with_limit(200_000) - 0.75).abs() < 0.01);
         // Custom limit
         assert!((summary.context_pct_with_limit(300_000) - 0.5).abs() < 0.01);
     }

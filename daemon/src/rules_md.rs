@@ -78,6 +78,17 @@ fn build_rules_md(config: &MergedConfig) -> String {
                 .join(", ")
         ));
     }
+    if !config.deny_list_allow.is_empty() {
+        md.push_str(&format!(
+            "\nAllowed (override deny): {}\n",
+            config
+                .deny_list_allow
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     md.push('\n');
 
     // Dangerous ops

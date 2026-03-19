@@ -29,7 +29,6 @@ EMPTY_FILTER = {"filterType": "group", "logicalOperator": "AND", "conditions": [
 
 # Panel type mapping: our custom types → OpenObserve chart types
 PANEL_TYPE_MAP = {
-    "metric": "metric",
     "bar": "bar",
     "line": "line",
     "pie": "pie",
@@ -231,10 +230,10 @@ def _translate_panel(panel: dict, idx: int) -> dict:
             "legends_position": "bottom",
         },
         "layout": {
-            "x": (idx % 2) * 6,
-            "y": (idx // 2) * 5,
-            "w": 6 if panel["type"] != "line" else 12,
-            "h": 4 if panel["type"] == "metric" else 6,
+            "x": 0,
+            "y": idx * 6,
+            "w": 12,
+            "h": 6,
             "i": idx + 1,
         },
     }

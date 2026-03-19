@@ -1,0 +1,36 @@
+{
+  "title": "Cost Tracking",
+  "description": "LLM spend tracking: daily spend, by persona, budget utilization",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Daily Spend (USD)",
+      "type": "area",
+      "query": "SELECT DATE_TRUNC('day', TO_TIMESTAMP(_timestamp / 1000000)) as day, SUM(CAST(devloop_cost_spent_usd AS DOUBLE)) as total_spent FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY day ORDER BY day"
+    },
+    {
+      "id": 2,
+      "title": "Spend by Persona",
+      "type": "bar",
+      "query": "SELECT devloop_agent_persona as persona, ROUND(SUM(CAST(devloop_cost_spent_usd AS DOUBLE)), 2) as total_spent FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND devloop_agent_persona IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY persona ORDER BY total_spent DESC"
+    },
+    {
+      "id": 3,
+      "title": "Budget Utilization Over Time (%)",
+      "type": "line",
+      "query": "SELECT DATE_TRUNC('day', TO_TIMESTAMP(_timestamp / 1000000)) as day, ROUND(100.0 * SUM(CAST(devloop_cost_spent_usd AS DOUBLE)) / NULLIF(SUM(CAST(devloop_cost_budget_usd AS DOUBLE)), 0), 1) as utilization_pct FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY day ORDER BY day"
+    },
+    {
+      "id": 4,
+      "title": "Cumulative Monthly Spend (USD)",
+      "type": "area",
+      "query": "SELECT DATE_TRUNC('month', TO_TIMESTAMP(_timestamp / 1000000)) as month, SUM(CAST(devloop_cost_spent_usd AS DOUBLE)) as monthly_total FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '90 DAYS' AS BIGINT) / 1000 GROUP BY month ORDER BY month"
+    },
+    {
+      "id": 5,
+      "title": "Top Spending Runs",
+      "type": "bar",
+      "query": "SELECT trace_id, ROUND(CAST(devloop_cost_spent_usd AS DOUBLE), 4) as spent_usd FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 ORDER BY spent_usd DESC LIMIT 20"
+    }
+  ]
+}

@@ -143,6 +143,8 @@ pub struct PatternOverrides {
     pub extra_patterns: Vec<String>,
     #[serde(default)]
     pub remove_patterns: Vec<String>,
+    #[serde(default)]
+    pub allow_patterns: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -335,9 +337,10 @@ pub struct MergedConfig {
     pub tier2: bool,
     pub ambient_mode: String,
 
-    // Deny list: built-in + extra - remove
+    // Deny list: built-in + extra - remove, with allow bypass
     pub deny_list_extra: Vec<String>,
     pub deny_list_remove: Vec<String>,
+    pub deny_list_allow: Vec<String>,
 
     // Dangerous ops: built-in + extra, with allow bypass
     pub dangerous_ops_extra: Vec<String>,
@@ -475,12 +478,14 @@ fn merge(
     // Enabled: global.enabled AND repo.ambient (if repo config exists)
     let enabled = global.enabled && repo_cfg.map_or(true, |r| r.ambient);
 
-    // Merge deny_list: global extra/remove + repo extra/remove
+    // Merge deny_list: global extra/remove/allow + repo extra/remove/allow
     let mut deny_list_extra = global.deny_list.extra_patterns.clone();
     let mut deny_list_remove = global.deny_list.remove_patterns.clone();
+    let mut deny_list_allow = global.deny_list.allow_patterns.clone();
     if let Some(repo) = repo_cfg {
         deny_list_extra.extend(repo.deny_list.extra_patterns.iter().cloned());
         deny_list_remove.extend(repo.deny_list.remove_patterns.iter().cloned());
+        deny_list_allow.extend(repo.deny_list.allow_patterns.iter().cloned());
     }
 
     // Merge dangerous_ops: global extra/allow + repo extra/allow
@@ -520,6 +525,7 @@ fn merge(
         ambient_mode: global.ambient_mode.clone(),
         deny_list_extra,
         deny_list_remove,
+        deny_list_allow,
         dangerous_ops_extra,
         dangerous_ops_allow,
         secrets_extra,
@@ -932,6 +938,7 @@ checkpoint:
             deny_list: PatternOverrides {
                 extra_patterns: vec!["config/production.yaml".into()],
                 remove_patterns: vec![".npmrc".into()],
+                ..Default::default()
             },
             dangerous_ops: DangerousOpsOverrides {
                 allow_patterns: vec!["docker compose down".into()],

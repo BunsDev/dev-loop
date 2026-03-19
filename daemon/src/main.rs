@@ -167,7 +167,11 @@ fn run_check(json: &str) {
         }
     };
 
-    let engine = CheckEngine::new();
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
+    let merged = config::load_merged(cwd.as_deref());
+    let engine = CheckEngine::from_config(&merged);
     let result = engine.check(&request);
 
     println!("{}", serde_json::to_string_pretty(&result).unwrap());

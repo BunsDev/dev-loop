@@ -55,15 +55,16 @@
   check_type: deny_list
 
 # ── Secret in name ──
-- name: "deny_list: file with 'secret' in name"
+# NOTE: *secret* pattern is removed by this project's .devloop.yaml
+# (source code files like secrets.rs would otherwise be blocked).
+# These tests verify the project-specific behavior (allow).
+- name: "deny_list: file with 'secret' in name (removed by config)"
   input: {"tool_name": "Write", "tool_input": {"file_path": "app-secrets.yaml", "content": "key: val"}}
-  expect: block
-  check_type: deny_list
+  expect: allow
 
-- name: "deny_list: my_secret_key"
+- name: "deny_list: my_secret_key (removed by config)"
   input: {"tool_name": "Write", "tool_input": {"file_path": "my_secret_key", "content": "..."}}
-  expect: block
-  check_type: deny_list
+  expect: allow
 
 # ── Cloud provider dirs ──
 - name: "deny_list: .aws/credentials"
@@ -142,12 +143,10 @@
 - name: "deny_list_allow: .env.example (docs)"
   input: {"tool_name": "Write", "tool_input": {"file_path": "docs/.env.example.md", "content": "..."}}
   expect: allow
-  skip_reason: "Known FP — .env.* pattern matches .env.example.md. Fix: add to allow_patterns in config."
 
 - name: "deny_list_allow: keystore.ts (code, not actual keystore)"
   input: {"tool_name": "Write", "tool_input": {"file_path": "src/keystore.ts", "content": "..."}}
   expect: allow
-  skip_reason: "Known FP — *.keystore matches keystore.ts extension mismatch, but only if the file ends with .keystore"
 
 - name: "deny_list_allow: Edit tool on normal file"
   input: {"tool_name": "Edit", "tool_input": {"file_path": "src/lib.rs", "old_string": "old", "new_string": "new"}}
