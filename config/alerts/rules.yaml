@@ -58,11 +58,11 @@ alerts:
     condition:
       sql: >
         SELECT trace_id,
-               runtime_num_turns as turns
+               CAST(runtime_num_turns AS INT) as turns
         FROM default
         WHERE service_name = 'dev-loop'
           AND operation_name = 'runtime.spawn_agent'
-          AND runtime_num_turns > 20
+          AND CAST(runtime_num_turns AS INT) > 20
           AND _timestamp >= CAST(NOW() - INTERVAL '1 HOUR' AS BIGINT) / 1000
       threshold: 1
       operator: ">="
@@ -106,10 +106,10 @@ alerts:
     condition:
       sql: >
         SELECT trace_id,
-               session_context_tokens_consumed as tokens
+               CAST(session_context_tokens_consumed AS BIGINT) as tokens
         FROM default
-        WHERE service_name = 'dev-loop'
-          AND session_context_tokens_consumed > 200000
+        WHERE service_name = 'dev-loop-ambient'
+          AND CAST(session_context_tokens_consumed AS BIGINT) > 200000
           AND _timestamp >= CAST(NOW() - INTERVAL '10 MINUTES' AS BIGINT) / 1000
       threshold: 1
       operator: ">="
@@ -123,7 +123,7 @@ alerts:
       sql: >
         SELECT COUNT(*) as trigger_count
         FROM default
-        WHERE service_name = 'dev-loop'
+        WHERE service_name = 'dev-loop-ambient'
           AND (guardrail_action = 'block'
                OR guardrail_action = 'warn')
           AND _timestamp >= CAST(NOW() - INTERVAL '1 HOUR' AS BIGINT) / 1000

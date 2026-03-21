@@ -1,6 +1,6 @@
 {
   "title": "Agent Performance",
-  "description": "Per-agent runtime metrics: turns, tokens, duration, persona breakdown",
+  "description": "Per-agent runtime metrics: turns, tokens, duration, tracer bullet breakdown",
   "panels": [
     {
       "id": 1,
@@ -10,9 +10,9 @@
     },
     {
       "id": 2,
-      "title": "Duration by Persona (seconds)",
+      "title": "Avg Duration by Tracer Bullet (seconds)",
       "type": "bar",
-      "query": "SELECT COALESCE(tb1_persona, tb2_persona, tb3_persona, tb4_persona, tb6_persona) as persona, ROUND(AVG(CAST(duration AS DOUBLE) / 1000000), 1) as avg_seconds FROM default WHERE service_name = 'dev-loop' AND operation_name LIKE 'tb%.run' AND COALESCE(tb1_persona, tb2_persona, tb3_persona, tb4_persona, tb6_persona) IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY persona ORDER BY avg_seconds DESC"
+      "query": "SELECT operation_name as tb, ROUND(AVG(CAST(duration AS DOUBLE) / 1000000), 1) as avg_seconds FROM default WHERE service_name = 'dev-loop' AND operation_name LIKE 'tb%.run' AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY tb ORDER BY avg_seconds DESC"
     },
     {
       "id": 3,

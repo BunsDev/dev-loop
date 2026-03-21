@@ -1,36 +1,36 @@
 {
-  "title": "Cost Tracking",
-  "description": "LLM spend tracking: daily spend, by persona, budget utilization",
+  "title": "Usage Tracking",
+  "description": "Token and turn usage: daily consumption, turns, context utilization",
   "panels": [
     {
       "id": 1,
-      "title": "Daily Spend (USD)",
+      "title": "Daily Token Usage",
       "type": "area",
-      "query": "SELECT DATE_TRUNC('day', TO_TIMESTAMP(_timestamp / 1000000)) as day, SUM(CAST(devloop_cost_spent_usd AS DOUBLE)) as total_spent FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY day ORDER BY day"
+      "query": "SELECT DATE_TRUNC('day', TO_TIMESTAMP(_timestamp / 1000000)) as day, SUM(CAST(runtime_input_tokens AS BIGINT)) as input_tokens, SUM(CAST(runtime_output_tokens AS BIGINT)) as output_tokens FROM default WHERE service_name = 'dev-loop' AND operation_name = 'runtime.spawn_agent' AND runtime_input_tokens IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY day ORDER BY day"
     },
     {
       "id": 2,
-      "title": "Spend by Persona",
+      "title": "Daily Turns",
       "type": "bar",
-      "query": "SELECT persona_name as persona, ROUND(SUM(CAST(devloop_cost_spent_usd AS DOUBLE)), 2) as total_spent FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND persona_name IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY persona ORDER BY total_spent DESC"
+      "query": "SELECT DATE_TRUNC('day', TO_TIMESTAMP(_timestamp / 1000000)) as day, SUM(CAST(runtime_num_turns AS INT)) as total_turns, COUNT(*) as runs FROM default WHERE service_name = 'dev-loop' AND operation_name = 'runtime.spawn_agent' AND runtime_num_turns IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY day ORDER BY day"
     },
     {
       "id": 3,
-      "title": "Budget Utilization Over Time (%)",
+      "title": "Context Window Utilization (%)",
       "type": "line",
-      "query": "SELECT DATE_TRUNC('day', TO_TIMESTAMP(_timestamp / 1000000)) as day, ROUND(100.0 * SUM(CAST(devloop_cost_spent_usd AS DOUBLE)) / NULLIF(SUM(CAST(devloop_cost_budget_usd AS DOUBLE)), 0), 1) as utilization_pct FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY day ORDER BY day"
+      "query": "SELECT DATE_TRUNC('day', TO_TIMESTAMP(_timestamp / 1000000)) as day, ROUND(AVG(CAST(session_context_pct AS DOUBLE)), 1) as utilization_pct FROM default WHERE service_name = 'dev-loop-ambient' AND operation_name = 'ambient.session' AND session_context_pct IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 GROUP BY day ORDER BY day"
     },
     {
       "id": 4,
-      "title": "Cumulative Monthly Spend (USD)",
+      "title": "Cumulative Monthly Tokens",
       "type": "area",
-      "query": "SELECT DATE_TRUNC('month', TO_TIMESTAMP(_timestamp / 1000000)) as month, SUM(CAST(devloop_cost_spent_usd AS DOUBLE)) as monthly_total FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '90 DAYS' AS BIGINT) / 1000 GROUP BY month ORDER BY month"
+      "query": "SELECT DATE_TRUNC('month', TO_TIMESTAMP(_timestamp / 1000000)) as month, SUM(CAST(runtime_input_tokens AS BIGINT)) as input_tokens, SUM(CAST(runtime_output_tokens AS BIGINT)) as output_tokens FROM default WHERE service_name = 'dev-loop' AND operation_name = 'runtime.spawn_agent' AND runtime_input_tokens IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '90 DAYS' AS BIGINT) / 1000 GROUP BY month ORDER BY month"
     },
     {
       "id": 5,
-      "title": "Top Spending Runs",
+      "title": "Top Token-Consuming Runs",
       "type": "bar",
-      "query": "SELECT trace_id, ROUND(CAST(devloop_cost_spent_usd AS DOUBLE), 4) as spent_usd FROM default WHERE service_name = 'dev-loop' AND devloop_cost_spent_usd IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 ORDER BY spent_usd DESC LIMIT 20"
+      "query": "SELECT trace_id, CAST(runtime_input_tokens AS BIGINT) + CAST(runtime_output_tokens AS BIGINT) as total_tokens, CAST(runtime_num_turns AS INT) as turns FROM default WHERE service_name = 'dev-loop' AND operation_name = 'runtime.spawn_agent' AND runtime_input_tokens IS NOT NULL AND _timestamp >= CAST(NOW() - INTERVAL '30 DAYS' AS BIGINT) / 1000 ORDER BY total_tokens DESC LIMIT 20"
     }
   ]
 }

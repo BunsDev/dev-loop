@@ -525,7 +525,17 @@ async fn handle_session_end(
 
             // Read outcome and token estimate from handoff YAML if available
             let handoff = crate::continuity::read_handoff(session_id);
-            let outcome = handoff.as_ref().and_then(|h| h.outcome.clone());
+            let outcome = handoff
+                .as_ref()
+                .and_then(|h| h.outcome.clone())
+                .or_else(|| {
+                    // Derive outcome from session stats when no explicit outcome set
+                    Some(if info.block_count > 0 {
+                        "blocked".to_string()
+                    } else {
+                        "completed".to_string()
+                    })
+                });
             let token_est = handoff.as_ref().and_then(|h| h.token_estimate.as_ref());
             let ambient_mode = {
                 state.config.read().await.ambient_mode.clone()
