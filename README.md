@@ -1,54 +1,49 @@
 # dev-loop
 
-A tracer-bullet-driven developer tooling harness that wires beads issues through agent orchestration, quality gates, observability, and feedback loops — across multiple projects.
+A safety harness for AI coding agents. It watches every action your AI takes, blocks dangerous ones in real-time, and runs quality checks before code ships.
 
 **100% open-source tool stack. Zero paid services (beyond Anthropic API).**
 
-## Philosophy
+## Why This Exists
 
-**Tracer bullets, not horizontal layers.** Every feature cuts vertically through all six layers before we widen anything. The first tracer bullet is a single issue flowing through the entire system end-to-end with visibility at every step.
+AI coding agents are fast — but they can also delete your `.env`, leak API keys in a commit, run `rm -rf /`, or push broken code. The faster they work, the more damage they can do before you notice.
 
-**Loop-first.** The system is a loop, not a pipeline. Every output feeds back as input. Failed PRs feed back to agents. Cost spikes feed back to throttles. Trace analysis feeds back to harness tuning.
+dev-loop sits between the AI agent and your codebase. It intercepts every action, checks it against safety rules, and blocks anything dangerous — all in under 5 milliseconds. For bigger checks (security scans, running tests), it runs a full gate at commit time.
 
-**Multi-project by default.** This harness manages N repos simultaneously. Isolation via worktrees, shared config via MCP servers, unified observability via OpenTelemetry.
-
-## System Overview
+## How It Works
 
 <picture>
   <img alt="System Overview — 6-layer closed loop" src="docs/diagrams/system-overview.svg" width="400">
 </picture>
 
-Six layers form a closed loop. The output of every stage feeds back as input to an earlier stage — there is no "end", only cycles that get tighter as the harness learns.
+Six layers form a closed loop — the output of every stage feeds back as input. There is no "end", only cycles that get tighter as the harness learns.
 
-| # | Layer | Purpose | Core Tools |
-|---|-------|---------|-----------|
-| 1 | **Intake** | Issue entry point | beads (`br`), SQLite |
-| 2 | **Orchestration** | Task isolation | git worktree, persona config |
-| 3 | **Agent Runtime** | Agent execution | Claude Code CLI, CLAUDE.md overlay |
-| 4 | **Quality Gates** | Automated checks | gitleaks, Semgrep, bandit, Claude CLI review |
-| 5 | **Observability** | Instrumentation | OpenTelemetry, OpenObserve, NDJSON |
-| 6 | **Feedback Loop** | Learning loop | retry logic, cost monitor, changelog |
+| # | Layer | What it does |
+|---|-------|-------------|
+| 1 | **Intake** | Pulls issues from the tracker |
+| 2 | **Orchestration** | Creates an isolated branch for the agent to work in |
+| 3 | **Agent Runtime** | Runs the AI agent with scoped permissions |
+| 4 | **Quality Gates** | Scans for secrets, vulnerabilities, and test failures |
+| 5 | **Observability** | Records everything for debugging and dashboards |
+| 6 | **Feedback Loop** | Retries failures, escalates to a human if stuck |
 
-## Architecture
+Three tiers of protection, from instant to thorough:
 
-### Two Implementations
+- **Real-time (< 5ms)** — Every file write, edit, or shell command is checked against deny lists, dangerous patterns, and secret detectors before it executes.
+- **Commit-time (~30s)** — Tests, security scanning, secret detection, and spec enforcement run before each commit goes through.
+- **Full pipeline (on demand)** — Take a bug report → assign it to an agent → agent writes code → quality gates → retry on failure → PR created.
 
-dev-loop has two complementary implementations:
-
-- **Python Layer** (`src/devloop/`) — Six MCP servers (one per layer), feedback pipelines, gate implementations. 313 tests passing.
-- **Rust Daemon** (`daemon/`) — `dl` binary. Ambient layer hooks for Claude Code, real-time check engine, session management. 257 tests passing.
-
-### Three-Tier Safety Model
+## Three-Tier Safety Model
 
 <picture>
   <img alt="Three-tier ambient architecture" src="docs/diagrams/ambient-tiers.svg" width="500">
 </picture>
 
-| Tier | Trigger | Latency | What it checks |
-|------|---------|---------|---------------|
-| **Tier 1** | Every tool call | < 5ms | Deny list, dangerous ops, secret patterns |
-| **Tier 2** | `git commit` | ~30s | Semgrep SAST, gitleaks, test runner, ATDD specs |
-| **Tier 3** | On demand (`just tb1`) | ~minutes | Full pipeline: all 6 layers end-to-end |
+| Tier | When it runs | Latency | What it checks |
+|------|-------------|---------|---------------|
+| **Tier 1** | Every tool call | < 5ms | Blocked files, dangerous commands, leaked secrets |
+| **Tier 2** | On `git commit` | ~30s | Security scanner, secret scanner, test runner, spec enforcement |
+| **Tier 3** | On demand | ~minutes | Full 6-layer pipeline end-to-end |
 
 ### Tier 1: Check Engine
 
@@ -56,13 +51,13 @@ dev-loop has two complementary implementations:
   <img alt="Check engine — deny list, dangerous ops, secrets" src="docs/diagrams/check-engine.svg" width="450">
 </picture>
 
-Three pre-compiled check modules run on every Write, Edit, or Bash tool call:
+Three check modules run on every Write, Edit, or Bash call the agent makes:
 
-- **Deny List** — 15 glob patterns block writes to `.env`, `.ssh/*`, `*.key`, etc.
-- **Dangerous Ops** — 25 regex patterns warn/block `rm -rf`, `curl | sh`, `git push --force`, etc.
-- **Secret Scanner** — 15 regex patterns warn on API keys, private keys, DB connection strings in file content.
+- **Deny List** — 15 patterns block writes to sensitive files (`.env`, `.ssh/*`, `*.key`, etc.)
+- **Dangerous Ops** — 25 patterns warn or block risky commands (`rm -rf`, `curl | sh`, `git push --force`, etc.)
+- **Secret Scanner** — 15 patterns catch API keys, private keys, and database strings in file content.
 
-All checks are configurable with `extra_patterns`, `remove_patterns`, and `allow_patterns`.
+All patterns are configurable per-project.
 
 ### Hook Integration
 
@@ -70,16 +65,16 @@ All checks are configurable with `extra_patterns`, `remove_patterns`, and `allow
   <img alt="Hook integration — Claude Code to daemon" src="docs/diagrams/hook-flow.svg" width="500">
 </picture>
 
-Six hooks installed into `~/.claude/settings.json` connect Claude Code to the daemon:
+Six hooks connect Claude Code to the safety daemon:
 
-| Hook | Fires on | Action |
-|------|----------|--------|
-| `PreToolUse` | Write, Edit, Bash | Deny list + dangerous ops check |
-| `PostToolUse` | Write, Edit | Secret detection in content |
-| `SessionStart` | Session begins | Register session, inject handoff context |
-| `SessionEnd` | Session ends | Write handoff YAML, export OTel spans |
-| `Stop` | After each turn | Context guard (warn at 85% usage) |
-| `PreCompact` | Before compaction | Write handoff before context is lost |
+| Hook | When it fires | What it does |
+|------|--------------|-------------|
+| `PreToolUse` | Before Write, Edit, Bash | Checks for blocked files and dangerous commands |
+| `PostToolUse` | After Write, Edit | Scans written content for secrets |
+| `SessionStart` | Session begins | Registers the session, injects context from prior sessions |
+| `SessionEnd` | Session ends | Saves session state, exports telemetry |
+| `Stop` | After each turn | Warns if the agent is using too much context (85% threshold) |
+| `PreCompact` | Before context compaction | Saves session state before context is trimmed |
 
 Hooks are **fail-open** — if the daemon is unavailable, all tool calls proceed normally.
 
@@ -89,15 +84,15 @@ Hooks are **fail-open** — if the daemon is unavailable, all tool calls proceed
   <img alt="Checkpoint gates — 5 sequential gates on commit" src="docs/diagrams/checkpoint-gates.svg" width="450">
 </picture>
 
-Five gates run sequentially on `git commit` (fail-fast — first failure blocks the commit):
+Five gates run in sequence on `git commit`. The first failure blocks the commit:
 
-1. **Sanity** — Auto-detects test runner (`cargo test`, `pytest`, `npm test`), runs it
-2. **Semgrep** — SAST scanning with `--config auto` + custom AI rules
-3. **Secrets** — gitleaks/betterleaks on staged diff
-4. **ATDD** — Spec-before-code enforcement (Given/When/Then)
-5. **Review** — Placeholder for human/LLM review
+1. **Sanity** — Auto-detects the test runner and runs it
+2. **Semgrep** — Security scanning for known vulnerability patterns
+3. **Secrets** — Scans the staged diff for leaked credentials
+4. **ATDD** — Checks that code matches acceptance specs (if configured)
+5. **Review** — Placeholder for human or LLM code review
 
-On pass, a `Dev-Loop-Gate: <sha256>` trailer is injected into the commit message.
+On pass, a `Dev-Loop-Gate: <sha256>` trailer is added to the commit message.
 
 ### Config System
 
@@ -105,13 +100,13 @@ On pass, a `Dev-Loop-Gate: <sha256>` trailer is injected into the commit message
   <img alt="3-layer config merge" src="docs/diagrams/config-merge.svg" width="350">
 </picture>
 
-Three layers merge to produce the final check engine configuration:
+Three layers merge to produce the final configuration:
 
-1. **Built-in defaults** — Hardcoded patterns in Rust
-2. **Global config** — `~/.config/dev-loop/ambient.yaml`
-3. **Per-repo config** — `.devloop.yaml` in project root
+1. **Built-in defaults** — Hardcoded in the Rust daemon
+2. **Global config** — `~/.config/dev-loop/ambient.yaml` (applies to all projects)
+3. **Per-project config** — `.devloop.yaml` in the project root
 
-Lists are additive (`extra_patterns` appends, `remove_patterns` subtracts). Scalars are last-wins. Both global and repo configs must have `enabled: true` for checks to run.
+Pattern lists are additive (you can add or remove patterns at each level). Both global and project configs must have `enabled: true` for checks to run.
 
 ### Session Lifecycle
 
@@ -119,12 +114,12 @@ Lists are additive (`extra_patterns` appends, `remove_patterns` subtracts). Scal
   <img alt="Session lifecycle state diagram" src="docs/diagrams/session-lifecycle.svg" width="500">
 </picture>
 
-Sessions are tracked from start to end with full observability:
+Sessions are tracked from start to end:
 
-- **Handoff YAML** at `/tmp/dev-loop/sessions/<id>.yaml` persists session state (~400 tokens) for context injection on resume
-- **OTel spans** exported to OpenObserve on session end (3x retry with exponential backoff)
-- **Context guard** warns at 85% usage and writes handoff before context is lost
-- **Allow-once** overrides let developers bypass a block temporarily (`dl allow-once ".env" --ttl 600`)
+- **Handoff file** — Session state is saved between sessions so the next session picks up where you left off
+- **Telemetry export** — Spans are sent to OpenObserve for dashboards and alerting
+- **Context guard** — Warns at 85% context usage and saves state before context is lost
+- **Temporary overrides** — `dl allow-once ".env" --ttl 600` bypasses a block for 10 minutes
 
 ### Observability
 
@@ -132,65 +127,41 @@ Sessions are tracked from start to end with full observability:
   <img alt="Observability data flow" src="docs/diagrams/observability-flow.svg" width="550">
 </picture>
 
-- **JSONL event log** — Append-only at `/tmp/dev-loop/events.jsonl` with rotation (50MB, 3 files)
-- **SSE broadcast** — Real-time event streaming via `dl stream`
-- **OTel export** — OTLP/HTTP JSON to OpenObserve (manual TCP, no heavy SDK)
-- **Dashboards** — Loop health + calibration panels in OpenObserve
-- **Alert rules** — Gate failure spikes, stuck agents, cost anomalies
+- **Event log** — Append-only JSONL log with automatic rotation
+- **Live stream** — Real-time event feed via `dl stream`
+- **Telemetry** — OpenTelemetry spans exported to OpenObserve
+- **Dashboards** — Loop health, agent performance, and calibration panels
+- **Alerts** — Gate failure spikes, stuck agents, cost anomalies
 
-## Tracer Bullets
+## What Gets Blocked
 
-<picture>
-  <img alt="Tracer bullet flow — TB-1 issue to PR" src="docs/diagrams/tracer-bullet-flow.svg" width="500">
-</picture>
+| The AI tries to... | What happens |
+|---|---|
+| Write to `.env` or `.ssh/config` | Blocked before the write executes (< 5ms) |
+| Run `rm -rf /` or `curl ... \| sh` | Blocked before the command executes (< 5ms) |
+| Force-push to main | Blocked before the push executes (< 5ms) |
+| Commit code containing an API key | Blocked at commit time (~30s) |
+| Commit code with a known vulnerability | Blocked at commit time (Semgrep scan) |
+| Commit code that fails tests | Blocked at commit time (auto-detected test runner) |
 
-Six vertical slices, each proving one critical path end-to-end. All validated against real repos.
-
-| TB | Name | Status |
-|----|------|--------|
-| TB-1 | Issue-to-PR (the golden path) | **PASSING** |
-| TB-2 | Failure-to-retry (the feedback path) | **PASSING** |
-| TB-3 | Security-gate-to-fix (the safety path) | **PASSING** |
-| TB-4 | Runaway-to-stop (the resource path) | **PASSING** |
-| TB-5 | Cross-repo cascade (the multi-project path) | **PASSING** |
-| TB-6 | Session replay debug (the observability path) | **PASSING** |
-
-See [docs/tracer-bullets.md](docs/tracer-bullets.md) for entry/exit criteria.
-
-## Calibration Pipeline
+## Calibration
 
 <picture>
   <img alt="5-stage calibration pipeline" src="docs/diagrams/calibration-pipeline.svg" width="450">
 </picture>
 
-`just calibrate` runs a 5-stage regression detection pipeline:
+`just calibrate` runs a 5-stage regression detection pipeline to make sure safety checks haven't degraded. It produces a dated report at `docs/calibration/YYYY-MM-DD.md` and exits with an error if it detects a regression.
 
-| Stage | What it does | Key metric |
-|-------|-------------|-----------|
-| Shadow Report | Analyze shadow-mode verdicts (last 7 days) | Verdict counts |
-| Replay Harness | Replay 2000 tool calls from 74 real sessions | Block rate (baseline: 0.5%) |
-| Tier 2 Suite | 13 planted-defect scenarios | 100% detection rate |
-| Feedback Scoring | Precision/recall from labeled events | F1 per check type |
-| Rust Tests | 257 daemon unit + integration tests | 100% pass |
-
-Produces a dated report at `docs/calibration/YYYY-MM-DD.md`. Exits 1 on regression.
-
-## Test Repos
-
-| Repo | Purpose |
-|------|---------|
-| prompt-bench | Python calculator — validates simple issue resolution |
-| omniswipe-backend | Fastify + PostgreSQL + Redis — validates production patterns |
-| enterprise-pipeline | Python/FastAPI + Qdrant RAG — validates cross-language support |
+Six end-to-end test paths ("tracer bullets") validate every critical workflow — from the happy path through security catches, retries, cross-repo cascades, and session replay. See [Tracer Bullets](docs/tracer-bullets.md) for details.
 
 ## Quick Start
 
 ```bash
-# Install the ambient daemon
+# Build and install the daemon
 cd daemon && cargo build --release
 cp target/release/dl ~/.local/bin/dl
 
-# Install hooks into Claude Code
+# Hook into Claude Code
 dl install
 
 # Start the daemon
@@ -198,13 +169,9 @@ dl start
 
 # Check status
 dl status
-
-# Run a tracer bullet end-to-end
-just tb1 <issue_id> <repo_path>
-
-# Run the calibration pipeline
-just calibrate
 ```
+
+Once running, dev-loop silently protects every Claude Code session. No changes to your workflow needed.
 
 ## CLI Reference
 
@@ -215,26 +182,26 @@ just calibrate
 | `dl start` | Start daemon (background, Unix socket) |
 | `dl stop` | Graceful shutdown |
 | `dl status` | Active sessions, uptime, event counts |
-| `dl stream` | Tail SSE event stream |
-| `dl reload` | Hot-reload config (SIGHUP) |
+| `dl stream` | Tail live event stream |
+| `dl reload` | Hot-reload config |
 
 ### Hook & Check
 
 | Command | Purpose |
 |---------|---------|
 | `dl install` / `dl uninstall` | Manage Claude Code hooks |
-| `dl enable` / `dl disable` | Toggle ambient layer |
+| `dl enable` / `dl disable` | Toggle the ambient safety layer |
 | `dl check` | Offline check engine test |
-| `dl checkpoint [--dir] [--json]` | Offline Tier 2 gates |
+| `dl checkpoint [--dir] [--json]` | Run Tier 2 gates offline |
 | `dl allow-once <pattern>` | Temporary block override (5min TTL) |
 
 ### Observability
 
 | Command | Purpose |
 |---------|---------|
-| `dl traces --last N` | Tail JSONL event log |
+| `dl traces --last N` | Tail the event log |
 | `dl shadow-report` | Analyze shadow-mode verdicts |
-| `dl feedback <id> correct\|false-positive\|missed` | Annotate events |
+| `dl feedback <id> correct\|false-positive\|missed` | Label events for scoring |
 | `dl feedback --stats` | Precision/recall/F1 per check type |
 | `dl outcome <session-id> success\|partial\|fail` | Record session outcome |
 
@@ -244,29 +211,29 @@ just calibrate
 |---------|---------|
 | `dl config [dir]` | Show merged config |
 | `dl config-lint [--dir]` | Validate configuration |
-| `dl rules` | Print active rules (markdown) |
+| `dl rules` | Print active rules |
 
 ## Stats
 
 | Metric | Value |
 |--------|-------|
-| Rust tests | 257 |
-| Conformance tests | 106 |
-| Replay tests | 19 |
-| Tier 2 tests | 28 |
-| Feedback tests | 27 |
-| **Total tests** | **437** |
-| Binary size | 6.4 MB |
-| CLI commands | 26 |
 | Tier 1 latency | < 5ms |
 | Hook latency | ~6ms (incl. process startup) |
+| Binary size | 6.4 MB |
+| **Total tests** | **863** |
+| Python tests | 393 |
+| Rust tests | 287 |
+| Conformance tests | 106 |
+| Tier 2 tests | 31 |
+| Feedback tests | 27 |
+| Replay tests | 19 |
 
 ## Documentation
 
 | Doc | What it covers |
 |-----|---------------|
 | [Architecture](docs/architecture.md) | System diagram, data flow, multi-project model |
-| [Tracer Bullets](docs/tracer-bullets.md) | All 6 vertical slices with entry/exit criteria |
+| [Tracer Bullets](docs/tracer-bullets.md) | All 6 end-to-end test paths with entry/exit criteria |
 | [Edge Cases — Pass 1](docs/edge-cases.md) | 25 failure modes: races, crashes, security |
 | [Edge Cases — Pass 2](docs/edge-cases-pass2.md) | 16 design gaps: context scaling, backpressure |
 | [Scoring Rubric](docs/scoring-rubric.md) | 7-dimension tool evaluation matrix |

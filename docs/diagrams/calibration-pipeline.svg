@@ -50,9 +50,9 @@
   <text x="243.36116666666663" y="253.60000000000002" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="243.36116666666663" dy="-3.9000000000000012">Stage 2: Replay Harness</tspan><tspan x="243.36116666666663" dy="16.900000000000002">(10K+ tool calls)</tspan></text>
 </g>
 <g class="node" data-id="S3" data-label="Stage 3: Tier 2 Suite
-(13 planted defects)" data-shape="rectangle">
+(31 planted defects)" data-shape="rectangle">
   <rect x="71.69166666666666" y="328.5" width="157.546" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
-  <text x="150.46466666666666" y="355.4" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="150.46466666666666" dy="-3.9000000000000012">Stage 3: Tier 2 Suite</tspan><tspan x="150.46466666666666" dy="16.900000000000002">(13 planted defects)</tspan></text>
+  <text x="150.46466666666666" y="355.4" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="150.46466666666666" dy="-3.9000000000000012">Stage 3: Tier 2 Suite</tspan><tspan x="150.46466666666666" dy="16.900000000000002">(31 planted defects)</tspan></text>
 </g>
 <g class="node" data-id="S4" data-label="Stage 4: Feedback Scoring
 (P/R/F1 metrics)" data-shape="rectangle">
@@ -60,9 +60,9 @@
   <text x="150.46466666666666" y="457.20000000000005" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="150.46466666666666" dy="-3.9000000000000012">Stage 4: Feedback Scoring</tspan><tspan x="150.46466666666666" dy="16.900000000000002">(P/R/F1 metrics)</tspan></text>
 </g>
 <g class="node" data-id="S5" data-label="Stage 5: Rust Tests
-(257 tests)" data-shape="rectangle">
+(287 tests)" data-shape="rectangle">
   <rect x="40" y="532.1" width="153.841" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
-  <text x="116.9205" y="559" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="116.9205" dy="-3.9000000000000012">Stage 5: Rust Tests</tspan><tspan x="116.9205" dy="16.900000000000002">(257 tests)</tspan></text>
+  <text x="116.9205" y="559" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="116.9205" dy="-3.9000000000000012">Stage 5: Rust Tests</tspan><tspan x="116.9205" dy="16.900000000000002">(287 tests)</tspan></text>
 </g>
 <g class="node" data-id="REPORT" data-label="Calibration Report
 docs/calibration/YYYY-MM-DD.md" data-shape="rectangle">
