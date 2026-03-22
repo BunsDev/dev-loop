@@ -194,6 +194,7 @@ Once running, dev-loop silently protects every Claude Code session. No changes t
 | `dl check` | Offline check engine test |
 | `dl checkpoint [--dir] [--json]` | Run Tier 2 gates offline |
 | `dl allow-once <pattern>` | Temporary block override (5min TTL) |
+| `dl kill <gate>` / `dl unkill [gate]` | Temporarily disable/re-enable a checkpoint gate |
 
 ### Observability
 
@@ -204,6 +205,7 @@ Once running, dev-loop silently protects every Claude Code session. No changes t
 | `dl feedback <id> correct\|false-positive\|missed` | Label events for scoring |
 | `dl feedback --stats` | Precision/recall/F1 per check type |
 | `dl outcome <session-id> success\|partial\|fail` | Record session outcome |
+| `dl dashboard-validate` | Validate dashboard SQL queries |
 
 ### Configuration
 
@@ -219,10 +221,10 @@ Once running, dev-loop silently protects every Claude Code session. No changes t
 |--------|-------|
 | Tier 1 latency | < 5ms |
 | Hook latency | ~6ms (incl. process startup) |
-| Binary size | 6.4 MB |
-| **Total tests** | **863** |
-| Python tests | 393 |
-| Rust tests | 287 |
+| Binary size | 6.5 MB |
+| **Total tests** | **764** |
+| Python tests | 386 |
+| Rust tests | 195 |
 | Conformance tests | 106 |
 | Tier 2 tests | 31 |
 | Feedback tests | 27 |
