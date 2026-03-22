@@ -684,10 +684,7 @@ def run_tb4(
                         root_span.set_attribute("tb4.retries_used", attempt)
                         root_span.set_attribute("tb4.turns_used_total", turns_used_total)
                         pipeline_success = True
-                        root_span.set_status(
-                            trace.StatusCode.OK,
-                            f"Gates passed after {attempt} retry(ies)",
-                        )
+                        root_span.set_status(trace.StatusCode.OK)
                         return TB4Result(
                             issue_id=issue_id,
                             repo_path=repo_path,

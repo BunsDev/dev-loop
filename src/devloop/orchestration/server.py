@@ -381,6 +381,13 @@ def build_claude_md_overlay(
             lines.append(persona_overlay.strip())
             lines.append("")
 
+        lines.append("## Setup")
+        lines.append("")
+        lines.append("- Before running tests, install the project in the worktree:")
+        lines.append("  `uv sync --dev` (or `pip install -e '.[dev]'` if uv is not available)")
+        lines.append("- If pyproject.toml or setup.py exists, always install before running pytest.")
+        lines.append("")
+
         lines.append("## Rules")
         lines.append("")
         lines.append("- Work only on the issue described above.")

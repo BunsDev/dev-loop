@@ -36,7 +36,7 @@ from devloop.feedback.pipeline import (
 )
 from devloop.feedback.server import escalate_to_human, retry_agent
 from devloop.feedback.types import RetryAttempt, SecurityFinding, TB3Result
-from devloop.gates.server import run_all_gates
+from devloop.gates.server import run_all_gates, run_gate_3_security_standalone
 from devloop.gates.types import Finding, GateResult, GateSuiteResult
 from devloop.intake.beads_poller import claim_issue, get_issue, poll_ready
 from devloop.observability.heartbeat import start_heartbeat, stop_heartbeat
@@ -44,6 +44,7 @@ from devloop.observability.tracing import init_tracing
 from devloop.orchestration.server import (
     build_claude_md_overlay,
     cleanup_worktree,
+    create_pull_request,
     select_persona,
     setup_worktree,
 )
@@ -432,10 +433,11 @@ def run_tb3(
                     "tb3.attempt": 0,
                 },
             ) as gates_span:
-                gate_raw = run_all_gates(
+                # Use standalone Gate 3 for pre-flight so we always get
+                # security findings, even if earlier gates would fail in
+                # fail-fast mode (Bug: gate_3_security not found).
+                gate_raw = run_gate_3_security_standalone(
                     worktree_path=worktree_path,
-                    issue_title=issue_title,
-                    issue_description=issue_description,
                 )
 
                 try:
@@ -494,10 +496,7 @@ def run_tb3(
                 )
                 root_span.set_attribute("tb3.outcome", "no_vulnerability_detected")
                 pipeline_success = True
-                root_span.set_status(
-                    trace.StatusCode.OK,
-                    "Pre-flight scan found no vulnerability",
-                )
+                root_span.set_status(trace.StatusCode.OK)
                 return TB3Result(
                     issue_id=issue_id,
                     repo_path=repo_path,
@@ -607,6 +606,44 @@ def run_tb3(
                     )
 
                     if retry_success:
+                        # Reconcile security_findings: mark findings as fixed
+                        # if they no longer appear in the passing gate's scan.
+                        if vuln_fixed:
+                            still_present = {
+                                (f.file, f.rule, f.cwe) for f in retry_sec_findings
+                            }
+                            for finding in security_findings:
+                                key = (finding.file, finding.rule, finding.cwe)
+                                if key not in still_present:
+                                    finding.fixed = True
+
+                        # Create PR after retry success
+                        retry_pr_url: str | None = None
+                        with tracer_tb3.start_as_current_span(
+                            "tb3.phase.create_pr",
+                            attributes={"tb3.phase": "create_pr"},
+                        ) as pr_span:
+                            gate_desc = "vulnerability FIXED" if vuln_fixed else "all gates passed"
+                            pr_result = create_pull_request(
+                                issue_id=issue_id,
+                                repo_path=repo_path,
+                                worktree_path=worktree_path,
+                                branch_name=f"dl/{issue_id}",
+                                issue_title=issue_title,
+                                issue_description=issue_description,
+                                gate_summary=f"Security gate: {gate_desc} after {attempt} retry(ies)",
+                            )
+                            pr_span.set_attribute("tb3.pr_created", pr_result.get("success", False))
+                            if pr_result.get("pr_url"):
+                                pr_span.set_attribute("tb3.pr_url", pr_result["pr_url"])
+                                retry_pr_url = pr_result["pr_url"]
+                            if not pr_result.get("success"):
+                                logger.warning(
+                                    "TB-3 PR creation failed for %s: %s (pipeline still succeeds)",
+                                    issue_id,
+                                    pr_result.get("message", "unknown error"),
+                                )
+
                         elapsed = time.monotonic() - pipeline_start
                         logger.info(
                             "TB-3 SUCCESS after retry %d: Issue %s in %.1fs "
@@ -621,10 +658,7 @@ def run_tb3(
                         pipeline_success = True
                         root_span.set_attribute("tb3.retries_used", attempt)
                         root_span.set_attribute("tb3.vulnerability_fixed", vuln_fixed)
-                        root_span.set_status(
-                            trace.StatusCode.OK,
-                            f"Security fix verified after {attempt} retry(ies)",
-                        )
+                        root_span.set_status(trace.StatusCode.OK)
                         return TB3Result(
                             issue_id=issue_id,
                             repo_path=repo_path,
@@ -642,6 +676,7 @@ def run_tb3(
                             cwe_ids=cwe_ids,
                             vuln_seeded=force_vuln_seed,
                             retry_history=retry_history,
+                            pr_url=retry_pr_url,
                         ).model_dump()
 
                     # Accumulate failures for next retry prompt (M6: include spawn failures)

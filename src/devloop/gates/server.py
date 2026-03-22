@@ -304,8 +304,9 @@ def run_gate_0_sanity(worktree_path: str) -> dict:
                 passed = False
 
         elif project_type == "python":
-            # Ensure deps are installed in the worktree before testing
-            _run_cmd(["uv", "sync", "--dev"], cwd=worktree, timeout=120)
+            # Force a clean reinstall so pytest can import the local package
+            # even if the agent modified source files since the last sync.
+            _run_cmd(["uv", "sync", "--dev", "--reinstall"], cwd=worktree, timeout=120)
             test_result = _run_cmd(
                 ["uv", "run", "pytest", "--tb=short", "-q"], cwd=worktree, timeout=300
             )
@@ -1117,6 +1118,27 @@ def run_gate_3_security(worktree_path: str, *, fail_on_missing_tool: bool = Fals
             passed=passed,
             findings=findings,
             duration_seconds=round(elapsed, 3),
+        ).model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Gate 3 standalone (for TB-3 pre-flight)
+# ---------------------------------------------------------------------------
+
+
+def run_gate_3_security_standalone(worktree_path: str) -> dict:
+    """Run only Gate 3 (security scan). Used by TB-3 pre-flight to capture
+    security findings without being blocked by earlier gates in fail-fast mode."""
+    with tracer.start_as_current_span(
+        "gates.run_gate_3_standalone",
+        attributes={"gate.name": "gate_3_security_standalone"},
+    ):
+        g3 = GateResult(**run_gate_3_security(worktree_path))
+        return GateSuiteResult(
+            overall_passed=g3.passed,
+            gate_results=[g3],
+            first_failure=g3.gate_name if not g3.passed else None,
+            total_duration_seconds=g3.duration_seconds,
         ).model_dump()
 
 

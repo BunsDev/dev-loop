@@ -110,6 +110,7 @@ class TB3Result(BaseModel):
     escalated: bool = False
     error: str | None = None
     duration_seconds: float = 0.0
+    pr_url: str | None = None
     # TB-3 specific fields
     trace_id: str | None = Field(
         default=None,
@@ -335,6 +336,7 @@ class TB2Result(BaseModel):
     escalated: bool = False
     error: str | None = None
     duration_seconds: float = 0.0
+    pr_url: str | None = None
     # TB-2 specific fields
     trace_id: str | None = Field(
         default=None,

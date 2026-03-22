@@ -45,6 +45,7 @@ from devloop.observability.tracing import init_tracing
 from devloop.orchestration.server import (
     build_claude_md_overlay,
     cleanup_worktree,
+    create_pull_request,
     select_persona,
     setup_worktree,
 )
@@ -421,6 +422,32 @@ def run_tb2(
             # Phase 9: Gates passed on first try -> success
             # ----------------------------------------------------------
             if gate_suite.overall_passed:
+                # Create PR
+                pr_url: str | None = None
+                with tracer_tb2.start_as_current_span(
+                    "tb2.phase.create_pr",
+                    attributes={"tb2.phase": "create_pr"},
+                ) as pr_span:
+                    pr_result = create_pull_request(
+                        issue_id=issue_id,
+                        repo_path=repo_path,
+                        worktree_path=worktree_path,
+                        branch_name=f"dl/{issue_id}",
+                        issue_title=issue_title,
+                        issue_description=issue_description,
+                        gate_summary=f"All gates passed on first attempt ({len(gate_suite.gate_results)} gates)",
+                    )
+                    pr_span.set_attribute("tb2.pr_created", pr_result.get("success", False))
+                    if pr_result.get("pr_url"):
+                        pr_span.set_attribute("tb2.pr_url", pr_result["pr_url"])
+                        pr_url = pr_result["pr_url"]
+                    if not pr_result.get("success"):
+                        logger.warning(
+                            "TB-2 PR creation failed for %s: %s (pipeline still succeeds)",
+                            issue_id,
+                            pr_result.get("message", "unknown error"),
+                        )
+
                 elapsed = time.monotonic() - pipeline_start
                 logger.info(
                     "TB-2: Gates passed on first attempt (%.1fs). "
@@ -429,10 +456,7 @@ def run_tb2(
                 )
                 root_span.set_attribute("tb2.outcome", "success_first_attempt")
                 pipeline_success = True
-                root_span.set_status(
-                    trace.StatusCode.OK,
-                    "Gates passed on first attempt — retry path not exercised",
-                )
+                root_span.set_status(trace.StatusCode.OK)
                 return TB2Result(
                     issue_id=issue_id,
                     repo_path=repo_path,
@@ -446,6 +470,7 @@ def run_tb2(
                     attempt_span_ids=attempt_span_ids,
                     force_gate_fail_used=force_gate_fail,
                     retry_history=retry_history,
+                    pr_url=pr_url,
                 ).model_dump()
 
             # ----------------------------------------------------------
@@ -514,6 +539,32 @@ def run_tb2(
                     )
 
                     if retry_success:
+                        # Create PR after retry success
+                        retry_pr_url: str | None = None
+                        with tracer_tb2.start_as_current_span(
+                            "tb2.phase.create_pr_after_retry",
+                            attributes={"tb2.phase": "create_pr"},
+                        ) as retry_pr_span:
+                            retry_pr_result = create_pull_request(
+                                issue_id=issue_id,
+                                repo_path=repo_path,
+                                worktree_path=worktree_path,
+                                branch_name=f"dl/{issue_id}",
+                                issue_title=issue_title,
+                                issue_description=issue_description,
+                                gate_summary=f"All gates passed after {attempt} retry(ies)",
+                            )
+                            retry_pr_span.set_attribute("tb2.pr_created", retry_pr_result.get("success", False))
+                            if retry_pr_result.get("pr_url"):
+                                retry_pr_span.set_attribute("tb2.pr_url", retry_pr_result["pr_url"])
+                                retry_pr_url = retry_pr_result["pr_url"]
+                            if not retry_pr_result.get("success"):
+                                logger.warning(
+                                    "TB-2 PR creation failed for %s after retry: %s (pipeline still succeeds)",
+                                    issue_id,
+                                    retry_pr_result.get("message", "unknown error"),
+                                )
+
                         elapsed = time.monotonic() - pipeline_start
                         logger.info(
                             "TB-2 SUCCESS after retry %d: Issue %s in %.1fs",
@@ -525,10 +576,7 @@ def run_tb2(
                         root_span.set_attribute("tb2.outcome", "success_after_retry")
                         pipeline_success = True
                         root_span.set_attribute("tb2.retries_used", attempt)
-                        root_span.set_status(
-                            trace.StatusCode.OK,
-                            f"Gates passed after {attempt} retry(ies)",
-                        )
+                        root_span.set_status(trace.StatusCode.OK)
                         return TB2Result(
                             issue_id=issue_id,
                             repo_path=repo_path,
@@ -543,6 +591,7 @@ def run_tb2(
                             attempt_span_ids=attempt_span_ids,
                             force_gate_fail_used=force_gate_fail,
                             retry_history=retry_history,
+                            pr_url=retry_pr_url,
                         ).model_dump()
 
                     # Accumulate failures for next retry prompt (M6: include spawn failures)

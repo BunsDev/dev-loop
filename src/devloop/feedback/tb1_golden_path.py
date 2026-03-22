@@ -539,10 +539,7 @@ def run_tb1(issue_id: str, repo_path: str) -> dict:
                         root_span.set_attribute("tb1.outcome", "success_after_retry")
                         root_span.set_attribute("tb1.retries_used", attempt)
                         pipeline_success = True
-                        root_span.set_status(
-                            trace.StatusCode.OK,
-                            f"Gates passed after {attempt} retry(ies)",
-                        )
+                        root_span.set_status(trace.StatusCode.OK)
                         return TB1Result(
                             issue_id=issue_id,
                             repo_path=repo_path,

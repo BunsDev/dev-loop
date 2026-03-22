@@ -17,7 +17,7 @@ from devloop.feedback.pipeline import (
     _trace_id_hex,
 )
 from devloop.feedback.types import SecurityFinding, TB3Result
-from devloop.gates.server import run_gate_3_security
+from devloop.gates.server import run_gate_3_security, run_gate_3_security_standalone
 from devloop.gates.types import Finding, GateResult, GateSuiteResult
 
 
@@ -501,3 +501,127 @@ class TestGate3BanditTimeout:
         gate = GateResult(**result)
         assert gate.passed is False
         assert "timed out" in gate.findings[0].message
+
+
+# ---------------------------------------------------------------------------
+# Gate 3 standalone tests
+# ---------------------------------------------------------------------------
+
+
+class TestGate3SecurityStandalone:
+    """Tests for run_gate_3_security_standalone()."""
+
+    def test_returns_valid_suite_result(self, tmp_path):
+        """Returns a valid GateSuiteResult with exactly one gate result."""
+        (tmp_path / "package.json").write_text("{}")
+        result = run_gate_3_security_standalone(str(tmp_path))
+        suite = GateSuiteResult(**result)
+        assert len(suite.gate_results) == 1
+        assert suite.gate_results[0].gate_name == "gate_3_security"
+
+    def test_skipped_gate_passes_overall(self, tmp_path):
+        """Skipped gate (non-Python project) results in overall_passed=True."""
+        (tmp_path / "package.json").write_text("{}")
+        result = run_gate_3_security_standalone(str(tmp_path))
+        suite = GateSuiteResult(**result)
+        assert suite.overall_passed is True
+        assert suite.first_failure is None
+
+    @patch("devloop.gates.server._run_cmd")
+    @patch("devloop.gates.server._find_bandit", return_value="/usr/bin/bandit")
+    def test_fails_on_vulnerability(self, mock_bandit, mock_run, tmp_path):
+        """Returns failed suite when bandit finds vulnerabilities."""
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'\n")
+        (tmp_path / "src").mkdir()
+        bandit_output = {
+            "results": [
+                {
+                    "filename": str(tmp_path / "src" / "search.py"),
+                    "issue_cwe": {"id": 89},
+                    "issue_severity": "HIGH",
+                    "issue_text": "SQL injection",
+                    "line_number": 25,
+                    "test_id": "B608",
+                }
+            ],
+            "errors": [],
+        }
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1,
+            stdout=json.dumps(bandit_output), stderr="",
+        )
+        result = run_gate_3_security_standalone(str(tmp_path))
+        suite = GateSuiteResult(**result)
+        assert suite.overall_passed is False
+        assert suite.first_failure == "gate_3_security"
+        assert suite.gate_results[0].findings[0].cwe == "CWE-89"
+
+    @patch("devloop.gates.server._run_cmd")
+    @patch("devloop.gates.server._find_bandit", return_value="/usr/bin/bandit")
+    def test_extract_findings_always_finds_gate_3(self, mock_bandit, mock_run, tmp_path):
+        """Pre-flight scan using standalone always produces gate_3_security in results."""
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'\n")
+        (tmp_path / "src").mkdir()
+        bandit_output = {
+            "results": [
+                {
+                    "filename": str(tmp_path / "src" / "search.py"),
+                    "issue_cwe": {"id": 89},
+                    "issue_severity": "MEDIUM",
+                    "issue_text": "SQL injection",
+                    "line_number": 25,
+                    "test_id": "B608",
+                }
+            ],
+            "errors": [],
+        }
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1,
+            stdout=json.dumps(bandit_output), stderr="",
+        )
+        result = run_gate_3_security_standalone(str(tmp_path))
+        findings, gate_3_ran = _extract_security_findings(result)
+        assert gate_3_ran is True
+        assert len(findings) > 0
+        assert any(f.cwe == "CWE-89" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# TB-3 pr_url tests
+# ---------------------------------------------------------------------------
+
+
+class TestTB3ResultPrUrl:
+    """Tests for pr_url field in TB3Result."""
+
+    def test_pr_url_field_exists(self):
+        result = TB3Result(
+            issue_id="dl-123",
+            repo_path="/tmp/test",
+            success=True,
+            phase="retry_passed",
+            pr_url="https://github.com/test/repo/pull/1",
+        )
+        assert result.pr_url == "https://github.com/test/repo/pull/1"
+
+    def test_pr_url_defaults_to_none(self):
+        result = TB3Result(
+            issue_id="dl-123",
+            repo_path="/tmp/test",
+            success=False,
+            phase="error",
+        )
+        assert result.pr_url is None
+
+    def test_pr_url_roundtrip(self):
+        result = TB3Result(
+            issue_id="dl-123",
+            repo_path="/tmp/test",
+            success=True,
+            phase="retry_passed",
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        dumped = result.model_dump()
+        assert dumped["pr_url"] == "https://github.com/test/repo/pull/42"
+        restored = TB3Result(**dumped)
+        assert restored.pr_url == "https://github.com/test/repo/pull/42"

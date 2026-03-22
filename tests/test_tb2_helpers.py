@@ -174,3 +174,35 @@ class TestTB2Result:
         restored = TB2Result(**dumped)
         assert restored.blocked_verified is True
         assert restored.retry_history[1].span_id == "bbb"
+
+    def test_pr_url_field_exists(self):
+        result = TB2Result(
+            issue_id="dl-123",
+            repo_path="/tmp/test",
+            success=True,
+            phase="retry_passed",
+            pr_url="https://github.com/test/repo/pull/1",
+        )
+        assert result.pr_url == "https://github.com/test/repo/pull/1"
+
+    def test_pr_url_defaults_to_none(self):
+        result = TB2Result(
+            issue_id="dl-123",
+            repo_path="/tmp/test",
+            success=False,
+            phase="error",
+        )
+        assert result.pr_url is None
+
+    def test_pr_url_roundtrip(self):
+        result = TB2Result(
+            issue_id="dl-123",
+            repo_path="/tmp/test",
+            success=True,
+            phase="retry_passed",
+            pr_url="https://github.com/test/repo/pull/42",
+        )
+        dumped = result.model_dump()
+        assert dumped["pr_url"] == "https://github.com/test/repo/pull/42"
+        restored = TB2Result(**dumped)
+        assert restored.pr_url == "https://github.com/test/repo/pull/42"
